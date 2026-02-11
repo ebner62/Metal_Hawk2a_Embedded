@@ -40,13 +40,6 @@ Servo starboard_s; //Left Pull Mechanism
 //=============================
 #define SEALEVELPRESSURE_HPA (1013.25)
 
-//=============
-//Declarations
-//=============
-double speed_x;
-double speed_y;
-double speed_z;
-
 //============
 // Servo Pins
 //============
@@ -59,13 +52,13 @@ const uint8_t starboard_s_pin = 9; //idk what servo pin yet
 //========================
 String TELEMETRY;
 int TEAM_ID = 1094; // Done
-String MISSION_TIME; // Done it is = to GPS_TIME
+char MISSION_TIME[15]; // Done it is = to GPS_TIME
 int PACKET_COUNT = 0; // Done
 char MODE = 'F'; //F or S
 String sw_state = "LAUNCH_PAD"; // Done
-double ALTITUDE; // Done
-double TEMPERATURE; // Done
-double PRESSURE; // Done
+float ALTITUDE; // Done
+float TEMPERATURE; // Done
+float PRESSURE; // Done
 float VOLTAGE; // Done
 float CURRENT; // Done
 float GYRO_R; // Done
@@ -74,12 +67,12 @@ float GYRO_Y; // Done
 float ACCEL_R; // Done
 float ACCEL_P; // Done
 float ACCEL_Y; // Done
-String GPS_TIME; // Done
-long GPS_ALLTITUDE; // Done
-long GPS_LATITUDE; // Done
-long GPS_LONGITUDE; // Done
-byte GPS_SATS; // Done
-String CMD_ECHO;
+char GPS_TIME[15]; // Done
+double GPS_ALTITUDE; // Done
+double GPS_LATITUDE; // Done
+double GPS_LONGITUDE; // Done
+int GPS_SATS; // Done
+char CMD_ECHO[25];
 double STRB_ANGLE;
 double PORT_ANGLE;
 double VECTOR_PRODUCT;
@@ -88,6 +81,11 @@ double VECTOR_PRODUCT;
 long last_time = 0; //Simple local timer. Limits amount if I2C traffic to u-blox module.
 float lastVelR = 0, lastVelP = 0, lastVelY = 0;
 unsigned long bno_last_micros = 0;
+char rx_buffer[50];
+int rx_index = 0;
+
+// Commands
+bool CX = false;
 
 //temporary
     double VELOCITY = 0;
@@ -132,18 +130,17 @@ if (bno085.getSensorEvent(&sensorValue)){
 }
 if (millis() - last_time > 1000) {// Waits 1 second
   last_time = millis();
+
   //==========
   // SAM-M10Q
   //==========
 
-  GPS_LATITUDE = sam_m10q.getLatitude();
-  GPS_LONGITUDE = sam_m10q.getLongitude();
-  GPS_ALLTITUDE = sam_m10q.getAltitude();
+  GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
+  GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
+  GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
   GPS_SATS = sam_m10q.getSIV();
-  char time_buffer[15];
-  sprintf(time_buffer, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
-  GPS_TIME = String(time_buffer);
-  MISSION_TIME = String(time_buffer);
+  sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
+  strcpy(MISSION_TIME, GPS_TIME);
 
   //========
   // BMP581
@@ -171,8 +168,35 @@ if (millis() - last_time > 1000) {// Waits 1 second
 
 void send_telemetry() {
   if (millis() - last_time > 1000) {// Waits 1 second
-    char tel_buffer[55]; //I need to change buffer amount
-    sprintf(tel_buffer, "%d,%s,%d", TEAM_ID, MISSION_TIME, PACKET_COUNT = 0)
+    char tel_buffer[250]; //I need to change buffer amount
+
+    //Telemetry string========================================================
+    sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d", 
+            TEAM_ID, 
+            MISSION_TIME, 
+            PACKET_COUNT, 
+            MODE, 
+            sw_state.c_str(), 
+            ALTITUDE,
+            TEMPERATURE,
+            PRESSURE,
+            VOLTAGE,
+            CURRENT,
+            GYRO_R,
+            GYRO_P,
+            GYRO_Y,
+            ACCEL_R,
+            ACCEL_P,
+            ACCEL_Y,
+            GPS_TIME,
+            GPS_ALTITUDE,
+            GPS_LATITUDE,
+            GPS_LONGITUDE,
+            GPS_SATS
+            );
+
+    //========================================================================
+
     TELEMETRY = String(tel_buffer);
     Serial8.print(TELEMETRY);
     PACKET_COUNT += 1;
@@ -180,7 +204,53 @@ void send_telemetry() {
 }
 
 void recive_command(){
+  if (Serial8.available() > 0) {
+    char c = Serial8.read();
 
+    if (c == '\n'){
+      rx_buffer[rx_index] = '\0';
+      handleCommand(rx_buffer);
+      rx_index = 0;
+    }
+    else if (rx_index <49) {
+      rx_buffer[rx_index++] = c;
+    }
+  }
+}
+
+void handleCommand(char* message){
+
+  char temp[64];
+  strncpy(temp, message, sizeof(temp) - 1); //make a copy of message into temp bc strtok changes
+  temp[sizeof(temp) - 1] = '\0';
+
+  char* header = strtok(temp, ","); // CMD
+  char* teamID = strtok(NULL, ","); // 1094
+  char* type = strtok(NULL, ","); // family of command
+  char* state = strtok(NULL, ","); // specific command
+
+  //==================
+  // Testing Commands
+  //==================
+  if (header != NULL && strcmp(header, "CX") == 0) { //strcmp == 0 when its the same
+    if (teamID != NULL && strcmp(teamID, "1094") == 0) {
+      //====
+      // CX
+      //====
+      if (type != NULL && strcmp(type, "CX") == 0) {
+        if (state != NULL && strcmp(state, "ON") == 0) {
+          CX = true;
+        }
+        else if (state != NULL && strcmp(state, "OFF") == 0) {
+          CX = false;
+        }
+      }
+      //else if (type != NULL && strcmp(type, "ST") == 0) {
+      //  if (state != Null && strcmp(state))
+      //}
+    }
+
+  }
 
 }
 
