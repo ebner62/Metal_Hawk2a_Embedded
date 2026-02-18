@@ -6,7 +6,7 @@
 #include <Adafruit_INA260.h> //INA260
 #include <SparkFun_u-blox_GNSS_v3.h> // SAM-M10Q
 #include <Adafruit_BNO08x.h> // BNO085
-#include <Servo.h> // Servos ofc
+#include <PWMServo.h> // Servos ofc
 
 //======
 // Pins
@@ -14,6 +14,7 @@
 
 #define BNO08X_INT 19
 #define BNO08X_RESET -1
+const int ledpin = 13;
 
 //=========
 // Sensors
@@ -31,21 +32,27 @@ Adafruit_INA260 ina260 = Adafruit_INA260();
 //=========
 // Servo's
 //=========
-Servo release_s; //Release Mechanism
-Servo port_s; //Right Pull Mechanism
-Servo starboard_s; //Left Pull Mechanism
+PWMServo release_s; //Release Mechanism
+PWMServo port_s; //Right Pull Mechanism
+PWMServo starboard_s; //Left Pull Mechanism
 
 //=============================
 //Defines Pressure for the BMP
 //=============================
 #define SEALEVELPRESSURE_HPA (1013.25)
 
-//============
-// Servo Pins
-//============
-const uint8_t release_s_pin = 9; //idk what servo pin yet
-const uint8_t port_s_pin = 9; //idk what servo pin yet
-const uint8_t starboard_s_pin = 9; //idk what servo pin yet
+//========
+// Servo 
+//========
+const uint8_t release_s_pin = 25; //idk what servo pin yet
+const uint8_t port_s_pin = 29; //idk what servo pin yet
+const uint8_t starboard_s_pin = 28; //idk what servo pin yet
+
+int probe_release = 160; //change, also for nose_engage
+int probe_engage = 179; //change
+int nose_release = 140; //change, also for egg_engage
+int egg_release = 115; //change
+
 
 //========================
 // telemetry declarations
@@ -72,7 +79,7 @@ double GPS_ALTITUDE; // Done
 double GPS_LATITUDE; // Done
 double GPS_LONGITUDE; // Done
 int GPS_SATS; // Done
-char CMD_ECHO[25];
+char ECHO[64];
 double STRB_ANGLE;
 double PORT_ANGLE;
 double VECTOR_PRODUCT;
@@ -86,11 +93,14 @@ int rx_index = 0;
 
 // Commands
 bool CX = false;
+bool SIM_ENABLE = false;
+bool SIM_ACTIVATE = false;
 
 //temporary
     double VELOCITY = 0;
     double peak_altitude = 0;
-    double release = 100000000;
+    double release = 1000000000000000;
+  
 
 
 void heading_error() {
@@ -99,6 +109,9 @@ void heading_error() {
 }
 
 void collect_telemetry() {
+  //========
+  // BNO085
+  //========
 if (bno085.getSensorEvent(&sensorValue)){
   if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
     unsigned long currentMicros = micros();
@@ -171,7 +184,7 @@ void send_telemetry() {
     char tel_buffer[250]; //I need to change buffer amount
 
     //Telemetry string========================================================
-    sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d", 
+    sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s", 
             TEAM_ID, 
             MISSION_TIME, 
             PACKET_COUNT, 
@@ -192,7 +205,8 @@ void send_telemetry() {
             GPS_ALTITUDE,
             GPS_LATITUDE,
             GPS_LONGITUDE,
-            GPS_SATS
+            GPS_SATS,
+            ECHO
             );
 
     //========================================================================
@@ -208,11 +222,17 @@ void recive_command(){
     char c = Serial8.read();
 
     if (c == '\n'){
-      rx_buffer[rx_index] = '\0';
-      handleCommand(rx_buffer);
-      rx_index = 0;
+      if (rx_index > 0) {
+        rx_buffer[rx_index] = '\0';
+        //ECHO
+        strncpy(ECHO, rx_buffer, sizeof(ECHO) -  1);
+        //ECHO[sizeof(ECHO) - 1];
+
+        handleCommand(rx_buffer);
+        rx_index = 0;
+      }
     }
-    else if (rx_index <49) {
+    else if (rx_index < 49) {
       rx_buffer[rx_index++] = c;
     }
   }
@@ -223,6 +243,7 @@ void handleCommand(char* message){
   char temp[64];
   strncpy(temp, message, sizeof(temp) - 1); //make a copy of message into temp bc strtok changes
   temp[sizeof(temp) - 1] = '\0';
+  
 
   char* header = strtok(temp, ","); // CMD
   char* teamID = strtok(NULL, ","); // 1094
@@ -234,23 +255,100 @@ void handleCommand(char* message){
   //==================
   if (header != NULL && strcmp(header, "CX") == 0) { //strcmp == 0 when its the same
     if (teamID != NULL && strcmp(teamID, "1094") == 0) {
-      //====
-      // CX
-      //====
+      /*====*/
+      /* CX */
+      /*====*/
       if (type != NULL && strcmp(type, "CX") == 0) {
         if (state != NULL && strcmp(state, "ON") == 0) {
           CX = true;
         }
         else if (state != NULL && strcmp(state, "OFF") == 0) {
           CX = false;
+        } 
+      }
+      /*====*/
+      /* ST */
+      /*====*/
+      else if (type != NULL && strcmp(type, "ST") == 0) {
+        if (state != NULL && strcmp(state, "GPS") == 0) {
+          strcpy(MISSION_TIME, GPS_TIME); 
+      }
+        else {
+          strncpy(MISSION_TIME, state, sizeof(MISSION_TIME) - 1);
+          MISSION_TIME[sizeof(MISSION_TIME) - 1] = '\0';
+        }
+        strncpy(ECHO, MISSION_TIME, sizeof(ECHO) - 1); // bc of gps being messy this is here
+      }
+      /*=====*/
+      /* SIM */
+      /*=====*/
+      else if (type != NULL && strcmp(type, "SIM") == 0) {
+        if (state != NULL && strcmp(state, "ENABLE") == 0) {
+          SIM_ENABLE = TRUE;
+          }
+        else if (state != NULL && strcmp(state, "ACTIVATE") == 0) {
+          SIM_ACTIVATE = TRUE;
+        }
+        else if (state != NULL && strcmp(state, "DISABLE") == 0) {
+          SIM_ENABLE = FALSE;
+          SIM_ACTIVATE = FALSE;
         }
       }
-      //else if (type != NULL && strcmp(type, "ST") == 0) {
-      //  if (state != Null && strcmp(state))
-      //}
-    }
+      /*======*/
+      /* SIMP */
+      /*======*/
+      else if (type != NULL && strcmp(type, "SIMP") == 0) {
+        if ((SIM_ENABLE && SIM_ACTIVATE) == 1) {
+          simulation_mode(); // this should prob be outside of the function and also it currently doesnt send sim packets
+        }
+      }
+      /*=====*/
+      /* CAL */
+      /*=====*/
+      else if (type != NULL && strcmp(type, "CAL") == 0) {
+        ALTITUDE = 0;
+      }
+      /*=====*/
+      /* MEC */
+      /*=====*/
+      else if (type != NULL && strcmp(type, "MEC") == 0) {
+        if (state != NULL && strcmp(state, "REL") == 0){
+          release_s.write(probe_release);
+        }
+        if (state != NULL && strcmp(state, "ENG") == 0) {
+          release_s.write(probe_engage);
+        }
+      }
+      /*=======*/
+      /* NOSE */ 
+      /*=======*/
+      else if (type != NULL && strcmp(type, "NOSE") == 0) {
+        if (state != NULL && strcmp(state, "REL") == 0) {
+          release_s.write(nose_release);
+        }
+        else if (state != NULL && strcmp(state, "ENG") == 0) {
+          release_s.write(probe_release);
+        }
+      }
+      /*=====*/
+      /* EGG */
+      /*=====*/
+      else if (type != NULL && strcmp(type, "EGG") == 0) {
+        if (state != NULL && strcmp(state, "REL") == 0) {
+          release_s.write(egg_release);
+        }
+        else if (state != NULL && strcmp(state, "ENG") == 0) {
+          release_s.write(nose_release);
+        }
+      }
+    }   
+    
 
   }
+
+}
+
+void simulation_mode(){
 
 }
 
@@ -265,6 +363,7 @@ void setup() {
   release_s.attach(release_s_pin);
   port_s.attach(port_s_pin);
   starboard_s.attach(starboard_s_pin);
+  pinMode(ledpin, OUTPUT);
 
   //========
   // BMP581
@@ -301,7 +400,7 @@ void setup() {
   //===========
   if (sam_m10q.begin() == false)
    {
-    Serial8.println("SAM-M10Q Has not connected. Check wires Hayden or Rudra");
+    Serial8.println("SAM-M10Q Has not connected. Check wires Hay Hay");
     while (1);
    }
   if (!bmp581.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire1)) {
