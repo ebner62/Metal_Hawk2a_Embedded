@@ -1,6 +1,8 @@
 #include <Wire.h>
 #include <Arduino.h>
-#include <SPI.h> //idk if we need this
+#include <SD.h> //SD card
+#include <SPI.h> //SD card
+#include <EEPROM.h> //EEPROM
 #include <Adafruit_Sensor.h> //BMP581
 #include "Adafruit_BMP5xx.h" //BMP581
 #include <Adafruit_INA260.h> //INA260
@@ -16,6 +18,8 @@
 #define BNO08X_RESET -1
 const int ledpin = 13;
 
+const int MMF_ADDR = 0; // The memory "slot" we will use (EEPROM)
+
 //=========
 // Sensors
 //=========
@@ -29,24 +33,16 @@ sh2_SensorValue_t sensorValue; //bno idk what we use it for
 Adafruit_INA260 ina260 = Adafruit_INA260();
 
 
-//=========
-// Servo's
-//=========
+//=======
+// Servo
+//=======
 PWMServo release_s; //Release Mechanism
 PWMServo port_s; //Right Pull Mechanism
 PWMServo starboard_s; //Left Pull Mechanism
 
-//=============================
-//Defines Pressure for the BMP
-//=============================
-#define SEALEVELPRESSURE_HPA (1013.25)
-
-//========
-// Servo 
-//========
-const uint8_t release_s_pin = 25; //idk what servo pin yet
-const uint8_t port_s_pin = 29; //idk what servo pin yet
-const uint8_t starboard_s_pin = 28; //idk what servo pin yet
+const uint8_t release_s_pin = 25;
+const uint8_t port_s_pin = 29; 
+const uint8_t starboard_s_pin = 28; 
 
 int probe_release = 160; //change, also for nose_engage
 int probe_engage = 179; //change
@@ -84,99 +80,148 @@ double STRB_ANGLE;
 double PORT_ANGLE;
 double VECTOR_PRODUCT;
 
+//================================
+// Very importatatnt declarations
+//================================
+float velocity = 0;
+float apogee;
+float release;
+bool nose_fired = false;
+bool probe_fired = false;
+bool egg_fired = false;
 
+//=======================
+// Required Declarations
+//=======================
 long last_time = 0; //Simple local timer. Limits amount if I2C traffic to u-blox module.
-float lastVelR = 0, lastVelP = 0, lastVelY = 0;
+float lastVelR = 0, lastVelP = 0, lastVelY = 0, last_altitude = 0;
 unsigned long bno_last_micros = 0;
-char rx_buffer[50];
-int rx_index = 0;
+unsigned long last_vel_time = 0;
+char rx_buffer[50]; // Command handler
+int rx_index = 0; // Command handler
+float SEALEVELPRESSURE_HPA  = (1013.25); //bmp
+unsigned long time_offset = 0;
+uint32_t total_seconds;
+int hours;
+int minutes;
+int seconds;
 
+//==========
 // Commands
+//==========
 bool CX = false;
 bool SIM_ENABLE = false;
 bool SIM_ACTIVATE = false;
+bool MMF = false;
 
-//temporary
-    double VELOCITY = 0;
-    double peak_altitude = 0;
-    double release = 1000000000000000;
-  
-
-
-void heading_error() {
-
-
+void steering() {
 }
 
 void collect_telemetry() {
+  //======
+  // TIME
+  //======
+  total_seconds = (millis() / 1000) + time_offset;
+
+  total_seconds %= 86400; //prevents error at 24:00
+
+  hours = total_seconds / 3600;
+  minutes = (total_seconds % 3600) / 60;
+  seconds = total_seconds % 60;
+
+  sprintf(MISSION_TIME, "%02d:%02d:%02d", hours, minutes, seconds);
+
   //========
   // BNO085
   //========
-if (bno085.getSensorEvent(&sensorValue)){
-  if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
-    unsigned long currentMicros = micros();
-    float dt = (currentMicros - bno_last_micros) / 1000000.0;
+  if (bno085.getSensorEvent(&sensorValue)){
+    if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
+      unsigned long currentMicros = micros();
+      float dt = (currentMicros - bno_last_micros) / 1000000.0;
 
-    if (dt > 0) {
-      // Get current velocity in deg/s
-      float currVelP = sensorValue.un.gyroscope.x * 57.2958;
-      float currVelR = sensorValue.un.gyroscope.y * 57.2958;
-      float currVelY = sensorValue.un.gyroscope.z * 57.2958;
+      if (dt > 0) {
+        // Get current velocity in deg/s
+        float currVelP = sensorValue.un.gyroscope.x * 57.2958;
+        float currVelR = sensorValue.un.gyroscope.y * 57.2958;
+        float currVelY = sensorValue.un.gyroscope.z * 57.2958;
 
-      // Calculate ACCEL (deg/s^2)
-      ACCEL_P = (currVelP - lastVelP) / dt;
-      ACCEL_R = (currVelR - lastVelR) / dt;
-      ACCEL_Y = (currVelY - lastVelY) / dt;
+        // Calculate ACCEL (deg/s^2)
+        ACCEL_P = (currVelP - lastVelP) / dt;
+        ACCEL_R = (currVelR - lastVelR) / dt;
+        ACCEL_Y = (currVelY - lastVelY) / dt;
 
-      // Store current for next calculation
-      lastVelP = currVelP;
-      lastVelR = currVelR;
-      lastVelY = currVelY;
-      bno_last_micros = currentMicros;
+        // Store current for next calculation
+        lastVelP = currVelP;
+        lastVelR = currVelR;
+        lastVelY = currVelY;
+        bno_last_micros = currentMicros;
 
-      // Update your Telemetry Gyro vars (current velocity)
-      GYRO_P = currVelP;
-      GYRO_R = currVelR;
-      GYRO_Y = currVelY;
+        // Update your Telemetry Gyro vars (current velocity)
+        GYRO_P = currVelP;
+        GYRO_R = currVelR;
+        GYRO_Y = currVelY;
+      }
     }
   }
-}
-if (millis() - last_time > 1000) {// Waits 1 second
-  last_time = millis();
+  if (millis() - last_telem_time > 100) {// Waits 0.1 second
+    last_telem_time = millis();
 
-  //==========
-  // SAM-M10Q
-  //==========
+    //==========
+    // SAM-M10Q
+    //==========
 
-  GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
-  GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
-  GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
-  GPS_SATS = sam_m10q.getSIV();
-  sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
-  strcpy(MISSION_TIME, GPS_TIME);
+    GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
+    GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
+    GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
+    GPS_SATS = sam_m10q.getSIV();
+    sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
 
-  //========
-  // BMP581
-  //========
+    //========
+    // BMP581
+    //========
 
-  sensors_event_t temp_event, pressure_event;
-  bmp_temp->getEvent(&temp_event);
-  bmp_pressure->getEvent(&pressure_event);
+    sensors_event_t temp_event;
+    bmp_temp->getEvent(&temp_event);
 
-  TEMPERATURE = temp_event.temperature;
-  PRESSURE = pressure_event.pressure;
+    TEMPERATURE = temp_event.temperature;
 
-  ALTITUDE = 44330 * (1.0 - pow(PRESSURE / SEALEVELPRESSURE_HPA, 0.1903));
+    if(!SIM_ENABLE || !SIM_ACTIVATE) {
+      sensors_event_t pressure_event;
+      bmp_pressure->getEvent(&pressure_event);
 
-  //========
-  // INA260
-  //========
+      PRESSURE = pressure_event.pressure;
+      // Altitude filter
+      float raw_altitude = 44330 * (1.0 - pow(PRESSURE / SEALEVELPRESSURE_HPA, 0.1903));
+      ALTITUDE = (ALTITUDE * 0.7) + (ALTITUDE * 0.3)
+    }
 
-  CURRENT = ina260.readCurrent();
-  VOLTAGE = ina260.readBusVoltage();
 
+    //========
+    // INA260
+    //========
+
+    CURRENT = (ina260.readCurrent() / 1000.0);
+    VOLTAGE = ina260.readBusVoltage();
+
+    //==========
+    // velocity
+    //==========
+    unsigned long current_vel_millis = millis();
+    float dt_vel = (current_vel_millis - last_vel_time) / 1000.0;
+
+    if (dt_vel > 0){
+      float instant_velocity = (ALTITUDE - last_altitude) / dt_vel;
+
+      velocity = (velocity * 0.8) + (instant_velocity * 0.2);
+
+      last_altitude = ALTITUDE;
+    }
   }
+
 }
+
+
+
 
 
 void send_telemetry() {
@@ -224,10 +269,14 @@ void recive_command(){
     if (c == '\n'){
       if (rx_index > 0) {
         rx_buffer[rx_index] = '\0';
+
+        //====== Gemini added this =============================================================
+        while(rx_index > 0 && (rx_buffer[rx_index-1] == '\r' || rx_buffer[rx_index-1] == ' ')) {
+          rx_buffer[--rx_index] = '\0';
+        }
+        //======================================================================================
         //ECHO
         strncpy(ECHO, rx_buffer, sizeof(ECHO) -  1);
-        //ECHO[sizeof(ECHO) - 1];
-
         handleCommand(rx_buffer);
         rx_index = 0;
       }
@@ -253,7 +302,7 @@ void handleCommand(char* message){
   //==================
   // Testing Commands
   //==================
-  if (header != NULL && strcmp(header, "CX") == 0) { //strcmp == 0 when its the same
+  if (header != NULL && strcmp(header, "CMD") == 0) { //strcmp == 0 when its the same
     if (teamID != NULL && strcmp(teamID, "1094") == 0) {
       /*====*/
       /* CX */
@@ -271,27 +320,30 @@ void handleCommand(char* message){
       /*====*/
       else if (type != NULL && strcmp(type, "ST") == 0) {
         if (state != NULL && strcmp(state, "GPS") == 0) {
-          strcpy(MISSION_TIME, GPS_TIME); 
-      }
-        else {
-          strncpy(MISSION_TIME, state, sizeof(MISSION_TIME) - 1);
-          MISSION_TIME[sizeof(MISSION_TIME) - 1] = '\0';
+          uint32_t gps_total_seconds = (sam_m10q.getHour() * 3600UL) + (sam_m10q.getMinute() * 60UL) + sam_m10q.getSecond();
+          time_offset = gps_total_seconds - (millis() / 1000);
         }
-        strncpy(ECHO, MISSION_TIME, sizeof(ECHO) - 1); // bc of gps being messy this is here
+      }
+        else if (state != NULL) {
+          int h, m, s;
+          if (sscanf(state, "%d:%d:%d", &h, &m, &s) == 3) {
+            uint32_t sync_seconds = (h * 3600UL) + (m * 60UL) + s;
+            time_offset = sync_seconds - (millis() / 1000);
+          }
       }
       /*=====*/
       /* SIM */
       /*=====*/
       else if (type != NULL && strcmp(type, "SIM") == 0) {
         if (state != NULL && strcmp(state, "ENABLE") == 0) {
-          SIM_ENABLE = TRUE;
+          SIM_ENABLE = true;
           }
         else if (state != NULL && strcmp(state, "ACTIVATE") == 0) {
-          SIM_ACTIVATE = TRUE;
+          SIM_ACTIVATE = true;
         }
         else if (state != NULL && strcmp(state, "DISABLE") == 0) {
-          SIM_ENABLE = FALSE;
-          SIM_ACTIVATE = FALSE;
+          SIM_ENABLE = false;
+          SIM_ACTIVATE = false;
         }
       }
       /*======*/
@@ -299,7 +351,7 @@ void handleCommand(char* message){
       /*======*/
       else if (type != NULL && strcmp(type, "SIMP") == 0) {
         if ((SIM_ENABLE && SIM_ACTIVATE) == 1) {
-          simulation_mode(); // this should prob be outside of the function and also it currently doesnt send sim packets
+          PRESSURE = atof(state);
         }
       }
       /*=====*/
@@ -307,6 +359,7 @@ void handleCommand(char* message){
       /*=====*/
       else if (type != NULL && strcmp(type, "CAL") == 0) {
         ALTITUDE = 0;
+        SEALEVELPRESSURE_HPA = PRESSURE;
       }
       /*=====*/
       /* MEC */
@@ -341,20 +394,44 @@ void handleCommand(char* message){
           release_s.write(nose_release);
         }
       }
-    }   
-    
-
+      /*=====*/
+      /* LED */
+      /*=====*/
+      else if (type != NULL && strcmp(type, "LED") == 0) {
+        digitalWrite(ledpin, !digitalRead(ledpin));
+      }
+      /*======*/
+      /* PORT */
+      /*======*/
+      else if ((type != NULL && strcmp(type, "PORT") == 0)) {
+        if (type != NULL) {
+          port_s.write(atoi(state));
+        }
+      }
+      /*===========*/
+      /* STARBOARD */
+      /*===========*/
+      else if ((type != NULL && strcmp(type, "STRB") == 0)) {
+        if (state !=NULL) {
+          starboard_s.write(atoi(state));
+        }
+      }
+      /*=====*/
+      /* MMF */
+      /*=====*/
+      else if ((type != NULL && strcmp(type, "MMF") == 0)) {
+        if (state != NULL && strcmp(state, "TRUE") == 0) {
+          MMF = true;
+          EEPROM.write(MMF_ADDR, 1);
+        } 
+        else if (state != NULL && strcmp(state, "FALSE") == 0) {
+          MMF = false;
+          EEPROM.write(MMF_ADDR, 0);
+        }
+      }
+          
+    }  
   }
-
-}
-
-void simulation_mode(){
-
-}
-
-void pro_restart() {
-
-
 }
 
 void setup() {
@@ -420,40 +497,49 @@ void setup() {
 
 
 void loop() {
-  
+  collect_telemetry();
+  recive_command();
+  send_telemetry();
+
   if(sw_state == "LAUNCH_PAD"){
-    if(ALTITUDE >= 5 && VELOCITY >=5){
+    if(ALTITUDE >= 20 && velocity >=10){
       sw_state = "ASCENT";
     }
   }
 
   else if(sw_state == "ASCENT"){
-    if(VELOCITY <=0){     //this might not catch it
-      sw_state = "APOGEE";
+    if(ALTITUDE > apogee){
+      apogee = ALTITUDE;
+    }
+    if(ALTITUDE < (apogee - 5.0)){
+      sw_state = "DESCENT";
+      release = apogee * 0.8;
     }
   }
 
-  else if(sw_state == "APOGEE"){
-    peak_altitude = ALTITUDE;
-    release = peak_altitude * 0.8;
-    sw_state = "DESCENT";
-  }
-
   else if(sw_state == "DESCENT"){
+    steering();
+    if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
+      release_s.write(nose_release);
+      nose_fired = true;
+    }
     if(ALTITUDE <= release){
       sw_state = "PROBE_RELEASE";
+      release_s.write(probe_release);
+      probe_fired = true;
     }
   }
 
   else if(sw_state == "PROBE_RELEASE"){
-    if(ALTITUDE <= 2){
-      //release prob ofc
+    if(ALTITUDE <= 2.0){
       sw_state = "PAYLOAD_RELEASE";
+      release_s.write(egg_release);
+      egg_fired = true;
     }
   }
 
   else if(sw_state == "PAYLOAD_RELEASE"){
-    if(VELOCITY <= 0.2){
+    if(velocity <= 0.2){
       sw_state = "LANDED";
     }
   }
