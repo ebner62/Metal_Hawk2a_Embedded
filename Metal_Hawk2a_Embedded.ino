@@ -20,6 +20,8 @@ const int ledpin = 13;
 
 const int MMF_ADDR = 0; // The memory "slot" we will use (EEPROM)
 
+const int chipSelect = BUILTIN_SDCARD; //SD card
+
 //=========
 // Sensors
 //=========
@@ -49,6 +51,18 @@ int probe_engage = 179; //change
 int nose_release = 140; //change, also for egg_engage
 int egg_release = 115; //change
 
+//==================
+// TARGET LOCATIONS
+//==================
+const double target_lat_one = 00.000; // FILL IN LATER
+const double target_lon_one = 00.000; // FILL IN LATER
+bool target_one_reached = false;
+
+const double target_lat_two = 00.000; // FILL IN LATER
+const double target_lon_two = 00.000; // FILL IN LATER
+bool target_two_reached = false;
+
+
 
 //========================
 // telemetry declarations
@@ -75,7 +89,7 @@ double GPS_ALTITUDE; // Done
 double GPS_LATITUDE; // Done
 double GPS_LONGITUDE; // Done
 int GPS_SATS; // Done
-char ECHO[64];
+char ECHO[64]; // Done
 double STRB_ANGLE;
 double PORT_ANGLE;
 double VECTOR_PRODUCT;
@@ -84,11 +98,20 @@ double VECTOR_PRODUCT;
 // Very importatatnt declarations
 //================================
 float velocity = 0;
-float apogee;
+float apogee = 0;
 float release;
 bool nose_fired = false;
 bool probe_fired = false;
 bool egg_fired = false;
+
+bool gps_online = false;
+bool bmp_online = false;
+bool ina_online = false;
+bool bno_online = false;
+bool sd_online = false;
+
+float last_heading = 0;
+float current_heading = 0;
 
 //=======================
 // Required Declarations
@@ -96,6 +119,7 @@ bool egg_fired = false;
 long last_time = 0; //Simple local timer. Limits amount if I2C traffic to u-blox module.
 float lastVelR = 0, lastVelP = 0, lastVelY = 0, last_altitude = 0;
 unsigned long bno_last_micros = 0;
+unsigned long last_telem_time = 0;
 unsigned long last_vel_time = 0;
 char rx_buffer[50]; // Command handler
 int rx_index = 0; // Command handler
@@ -115,6 +139,16 @@ bool SIM_ACTIVATE = false;
 bool MMF = false;
 
 void steering() {
+  //static double last_lat = GPS_LATITUDE;
+  //static double last_lon = GPS_LONGITUDE;
+
+  //double lat_moved = (GPS_LATITUDE - last_lat);
+  //double lon_moved = (GPS_LONGITUDE - last_lon);
+
+  if (((GPS_LATITUDE >= (target_lat_one - 0.00005)) && (GPS_LATITUDE <= (target_lat_one + 0.00005))) && 
+     ((GPS_LONGITUDE >= (target_lon_one - 0.00005)) && (GPS_LONGITUDE <= (target_lon_one + 0.00005)))){
+    target_one_reached = true;
+  }
 }
 
 void collect_telemetry() {
@@ -134,74 +168,96 @@ void collect_telemetry() {
   //========
   // BNO085
   //========
-  if (bno085.getSensorEvent(&sensorValue)){
-    if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
-      unsigned long currentMicros = micros();
-      float dt = (currentMicros - bno_last_micros) / 1000000.0;
+  if (bno_online){
+    if (bno085.getSensorEvent(&sensorValue)){
+      if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
+        unsigned long currentMicros = micros();
+        float dt = (currentMicros - bno_last_micros) / 1000000.0;
 
-      if (dt > 0) {
-        // Get current velocity in deg/s
-        float currVelP = sensorValue.un.gyroscope.x * 57.2958;
-        float currVelR = sensorValue.un.gyroscope.y * 57.2958;
-        float currVelY = sensorValue.un.gyroscope.z * 57.2958;
+        if (dt > 0) {
+          // Get current velocity in deg/s
+          float currVelP = sensorValue.un.gyroscope.x * 57.2958;
+          float currVelR = sensorValue.un.gyroscope.y * 57.2958;
+          float currVelY = sensorValue.un.gyroscope.z * 57.2958;
 
-        // Calculate ACCEL (deg/s^2)
-        ACCEL_P = (currVelP - lastVelP) / dt;
-        ACCEL_R = (currVelR - lastVelR) / dt;
-        ACCEL_Y = (currVelY - lastVelY) / dt;
+          // Calculate ACCEL (deg/s^2)
+          ACCEL_P = (currVelP - lastVelP) / dt;
+          ACCEL_R = (currVelR - lastVelR) / dt;
+          ACCEL_Y = (currVelY - lastVelY) / dt;
 
-        // Store current for next calculation
-        lastVelP = currVelP;
-        lastVelR = currVelR;
-        lastVelY = currVelY;
-        bno_last_micros = currentMicros;
+          // Store current for next calculation
+          lastVelP = currVelP;
+          lastVelR = currVelR;
+          lastVelY = currVelY;
+          bno_last_micros = currentMicros;
 
-        // Update your Telemetry Gyro vars (current velocity)
-        GYRO_P = currVelP;
-        GYRO_R = currVelR;
-        GYRO_Y = currVelY;
+          // Update your Telemetry Gyro vars (current velocity)
+          GYRO_P = currVelP;
+          GYRO_R = currVelR;
+          GYRO_Y = currVelY;
+        }
+      }
+      //=========
+      // Heading
+      //=========
+      else if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+        last_heading = current_heading;
+        float quaternion_w = sensorValue.un.rotationVector.real;
+        float quaternion_x = sensorValue.un.rotationVector.i;
+        float quaternion_y = sensorValue.un.rotationVector.j;
+        float quaternion_z = sensorValue.un.rotationVector.k;
+
+        float yaw = degrees(atan2(2.0*(quaternion_w*quaternion_z + quaternion_x*quaternion_y), 1.0 - 2.0*(quaternion_y*quaternion_y + quaternion_z*quaternion_z)));
+        current_heading = fmod(yaw + 360.0, 360.0);
       }
     }
   }
+
   if (millis() - last_telem_time > 100) {// Waits 0.1 second
     last_telem_time = millis();
 
     //==========
     // SAM-M10Q
     //==========
-
-    GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
-    GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
-    GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
-    GPS_SATS = sam_m10q.getSIV();
-    sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
+    if (gps_online){
+      GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
+      GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
+      GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
+      GPS_SATS = sam_m10q.getSIV();
+      sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
+    }
 
     //========
     // BMP581
     //========
 
-    sensors_event_t temp_event;
-    bmp_temp->getEvent(&temp_event);
+    if (bmp_online){
+      sensors_event_t temp_event;
+      bmp_temp->getEvent(&temp_event);
 
-    TEMPERATURE = temp_event.temperature;
+      TEMPERATURE = temp_event.temperature;
 
-    if(!SIM_ENABLE || !SIM_ACTIVATE) {
-      sensors_event_t pressure_event;
-      bmp_pressure->getEvent(&pressure_event);
+      if (!(SIM_ENABLE && SIM_ACTIVATE)) {
+        sensors_event_t pressure_event;
+        bmp_pressure->getEvent(&pressure_event);
 
-      PRESSURE = pressure_event.pressure;
+        PRESSURE = pressure_event.pressure;
+      }
+
       // Altitude filter
       float raw_altitude = 44330 * (1.0 - pow(PRESSURE / SEALEVELPRESSURE_HPA, 0.1903));
-      ALTITUDE = (ALTITUDE * 0.7) + (ALTITUDE * 0.3)
+      ALTITUDE = (ALTITUDE * 0.7) + (raw_altitude * 0.3);
+      
     }
 
 
     //========
     // INA260
     //========
-
-    CURRENT = (ina260.readCurrent() / 1000.0);
-    VOLTAGE = ina260.readBusVoltage();
+    if (ina_online){
+      CURRENT = (ina260.readCurrent() / 1000.0);
+      VOLTAGE = (ina260.readBusVoltage() / 1000.0);
+    }
 
     //==========
     // velocity
@@ -215,6 +271,7 @@ void collect_telemetry() {
       velocity = (velocity * 0.8) + (instant_velocity * 0.2);
 
       last_altitude = ALTITUDE;
+      last_vel_time = current_vel_millis;
     }
   }
 
@@ -226,7 +283,8 @@ void collect_telemetry() {
 
 void send_telemetry() {
   if (millis() - last_time > 1000) {// Waits 1 second
-    char tel_buffer[250]; //I need to change buffer amount
+    last_time = millis();
+    char tel_buffer[350]; //I need to change buffer amount
 
     //Telemetry string========================================================
     sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s", 
@@ -257,12 +315,20 @@ void send_telemetry() {
     //========================================================================
 
     TELEMETRY = String(tel_buffer);
-    Serial8.print(TELEMETRY);
+    Serial8.println(TELEMETRY);
     PACKET_COUNT += 1;
+
+    if (sd_online) {
+      File logFile = SD.open("flight.csv", FILE_WRITE);
+      if (logFile) {
+        logFile.println(tel_buffer);
+        logFile.close();
+      }
+    }
   }
 }
 
-void recive_command(){
+void receive_command(){
   if (Serial8.available() > 0) {
     char c = Serial8.read();
 
@@ -323,13 +389,14 @@ void handleCommand(char* message){
           uint32_t gps_total_seconds = (sam_m10q.getHour() * 3600UL) + (sam_m10q.getMinute() * 60UL) + sam_m10q.getSecond();
           time_offset = gps_total_seconds - (millis() / 1000);
         }
-      }
+      
         else if (state != NULL) {
           int h, m, s;
           if (sscanf(state, "%d:%d:%d", &h, &m, &s) == 3) {
             uint32_t sync_seconds = (h * 3600UL) + (m * 60UL) + s;
             time_offset = sync_seconds - (millis() / 1000);
           }
+        }
       }
       /*=====*/
       /* SIM */
@@ -350,7 +417,7 @@ void handleCommand(char* message){
       /* SIMP */
       /*======*/
       else if (type != NULL && strcmp(type, "SIMP") == 0) {
-        if ((SIM_ENABLE && SIM_ACTIVATE) == 1) {
+        if (SIM_ENABLE && SIM_ACTIVATE) {
           PRESSURE = atof(state);
         }
       }
@@ -359,6 +426,7 @@ void handleCommand(char* message){
       /*=====*/
       else if (type != NULL && strcmp(type, "CAL") == 0) {
         ALTITUDE = 0;
+        last_altitude = 0;
         SEALEVELPRESSURE_HPA = PRESSURE;
       }
       /*=====*/
@@ -442,63 +510,57 @@ void setup() {
   starboard_s.attach(starboard_s_pin);
   pinMode(ledpin, OUTPUT);
 
-  //========
-  // BMP581
-  //========
-  bmp_temp = bmp581.getTemperatureSensor();
-  bmp_pressure = bmp581.getPressureSensor();
-
-  bmp581.setTemperatureOversampling(BMP5XX_OVERSAMPLING_2X);
-  bmp581.setPressureOversampling(BMP5XX_OVERSAMPLING_16X);
-  bmp581.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
-  bmp581.setOutputDataRate(BMP5XX_ODR_15_HZ);
-  bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
-
   //======================================
   // Print to terminal to show connection
   //======================================
   Serial.println("Intitalizing Metal_Hawk2a");
 
+  //===========
+  // Debugging
+  //===========
+  gps_online = sam_m10q.begin();
+  bmp_online = bmp581.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire1);
+  ina_online = ina260.begin();
+  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1, BNO08X_INT);
+  sd_online = SD.begin(chipSelect);
+
+  //========
+  // BMP581
+  //========
+  if (bmp_online){
+    bmp_temp = bmp581.getTemperatureSensor();
+    bmp_pressure = bmp581.getPressureSensor();
+
+    bmp581.setTemperatureOversampling(BMP5XX_OVERSAMPLING_2X);
+    bmp581.setPressureOversampling(BMP5XX_OVERSAMPLING_16X);
+    bmp581.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
+    bmp581.setOutputDataRate(BMP5XX_ODR_15_HZ);
+    bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
+  }
+
   //=====
   // GPS
   //=====
-  sam_m10q.setI2COutput(COM_TYPE_UBX);
+  if (gps_online){
+    sam_m10q.setI2COutput(COM_TYPE_UBX);
+  }
 
   //========
   // BNO085
   //========
-  //bno085.enableReport(SH2_ROTATION_VECTOR);
-  //bno085.enableReport(SH2_ACCELEROMETER);
-  bno085.enableReport(SH2_GYROSCOPE_CALIBRATED);
-  bno_last_micros = micros();
+  if (bno_online){
+    bno085.enableReport(SH2_ROTATION_VECTOR);
+    //bno085.enableReport(SH2_ACCELEROMETER);
+    bno085.enableReport(SH2_GYROSCOPE_CALIBRATED);
+    bno_last_micros = micros();
+  }
 
-  //===========
-  // Debugging
-  //===========
-  if (sam_m10q.begin() == false)
-   {
-    Serial8.println("SAM-M10Q Has not connected. Check wires Hay Hay");
-    while (1);
-   }
-  if (!bmp581.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire1)) {
-    Serial8.println("The BMP581 is not being detected,. Check wires Hayden or Rudra");
-    while (1);
-  }
-  if (!bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1, BNO08X_INT)) { // Added &Wire1
-    Serial8.println("BNO085 not found on Wire1");
-  while (1);
-  }
-  if (!ina260.begin()) {
-    Serial8.println("Rudra ai the ina260 is not detected");
-    while (1);
-  }
- 
 }
 
 
 void loop() {
   collect_telemetry();
-  recive_command();
+  receive_command();
   send_telemetry();
 
   if(sw_state == "LAUNCH_PAD"){
@@ -543,5 +605,4 @@ void loop() {
       sw_state = "LANDED";
     }
   }
-
 }
