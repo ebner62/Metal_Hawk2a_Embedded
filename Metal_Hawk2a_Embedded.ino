@@ -129,6 +129,7 @@ uint32_t total_seconds;
 int hours;
 int minutes;
 int seconds;
+int apogee_counter = 0;
 
 //==========
 // Commands
@@ -287,7 +288,7 @@ void collect_telemetry() {
 void send_telemetry() {
   if (millis() - last_time > 1000) {// Waits 1 second
     last_time = millis();
-    char tel_buffer[512]; //I need to change buffer amount
+    char tel_buffer[800]; //I need to change buffer amount
 
     //Telemetry string========================================================
     sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s,,%.1f,%.1f,%.1f", 
@@ -321,13 +322,19 @@ void send_telemetry() {
     //========================================================================
 
     TELEMETRY = String(tel_buffer);
-    Serial8.println(TELEMETRY);
+    Serial8.print(TELEMETRY);
+    Serial8.print('\r');
     PACKET_COUNT += 1;
+
+    //Remove==========================================================================
+    Serial.println(TELEMETRY);
+    //************************************************************************************************
 
     if (sd_online) {
       File logFile = SD.open("flight.csv", FILE_WRITE);
       if (logFile) {
-        logFile.println(tel_buffer);
+        logFile.print(TELEMETRY);
+        logFile.print('\r');
         logFile.close();
       }
     }
@@ -351,6 +358,10 @@ void receive_command(){
       
         strncpy(ECHO, rx_buffer, sizeof(ECHO) -  1);
         ECHO[sizeof(ECHO) - 1] = '\0';
+
+//Remove**********************************************************************
+        Serial.print(rx_buffer);
+//Remove**********************************************************************
 
         for (size_t i = 0; i < sizeof(ECHO); i++) {
           if (ECHO[i] == '\0') break;
@@ -589,10 +600,14 @@ void loop() {
     if(ALTITUDE > apogee){
       apogee = ALTITUDE;
     }
-    if(ALTITUDE < (apogee - 5.0)){
-      sw_state = "DESCENT";
-      release = apogee * 0.8;
+    if((ALTITUDE < apogee) - 5.0 (&& velocity < -1.0)){
+      apogee_counter += 1;
+      if(apogee_counter >= 3){
+        sw_state = "DESCENT";
+        release = apogee * 0.8;
+      }
     }
+    else {apogee_counter = 0;}
   }
 
   else if(sw_state == "DESCENT"){
@@ -617,7 +632,7 @@ void loop() {
   }
 
   else if(sw_state == "PAYLOAD_RELEASE"){
-    if(velocity <= 0.2){
+    if((abs(velocity) <= 0.2) && (ALTITUDE  < 5.0)){
       sw_state = "LANDED";
     }
   }
