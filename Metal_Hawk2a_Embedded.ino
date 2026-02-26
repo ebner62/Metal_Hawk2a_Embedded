@@ -70,7 +70,7 @@ bool target_two_reached = false;
 String TELEMETRY;
 int TEAM_ID = 1094; // Done
 char MISSION_TIME[15]; // Done it is = to GPS_TIME
-int PACKET_COUNT = 0; // Done
+int PACKET_COUNT = 1; // Done
 char MODE = 'F'; //F or S
 String sw_state = "LAUNCH_PAD"; // Done
 float ALTITUDE; // Done
@@ -89,10 +89,10 @@ double GPS_ALTITUDE; // Done
 double GPS_LATITUDE; // Done
 double GPS_LONGITUDE; // Done
 int GPS_SATS; // Done
-char ECHO[64]; // Done
-double STRB_ANGLE;
-double PORT_ANGLE;
-double VECTOR_PRODUCT;
+char ECHO[128]; // Done
+double STRB_ANGLE = 0.0;
+double PORT_ANGLE = 0.0;
+double VECTOR_PRODUCT = 0.0;
 
 //================================
 // Very importatatnt declarations
@@ -121,7 +121,7 @@ float lastVelR = 0, lastVelP = 0, lastVelY = 0, last_altitude = 0;
 unsigned long bno_last_micros = 0;
 unsigned long last_telem_time = 0;
 unsigned long last_vel_time = 0;
-char rx_buffer[50]; // Command handler
+char rx_buffer[128]; // Command handler
 int rx_index = 0; // Command handler
 float SEALEVELPRESSURE_HPA  = (1013.25); //bmp
 unsigned long time_offset = 0;
@@ -133,7 +133,7 @@ int seconds;
 //==========
 // Commands
 //==========
-bool CX = false;
+bool CX = true;
 bool SIM_ENABLE = false;
 bool SIM_ACTIVATE = false;
 bool MMF = false;
@@ -244,11 +244,14 @@ void collect_telemetry() {
         PRESSURE = pressure_event.pressure;
       }
 
-      // Altitude filter
-      float raw_altitude = 44330 * (1.0 - pow(PRESSURE / SEALEVELPRESSURE_HPA, 0.1903));
-      ALTITUDE = (ALTITUDE * 0.7) + (raw_altitude * 0.3);
-      
     }
+    // Altitude filter
+    if (PRESSURE > 0) {
+      float raw_altitude = 44330 * (1.0 - pow((PRESSURE / 100.0) / SEALEVELPRESSURE_HPA, 0.1903));;
+      ALTITUDE = (ALTITUDE * 0.7) + (raw_altitude * 0.3);
+    }
+      
+    
 
 
     //========
@@ -284,10 +287,10 @@ void collect_telemetry() {
 void send_telemetry() {
   if (millis() - last_time > 1000) {// Waits 1 second
     last_time = millis();
-    char tel_buffer[350]; //I need to change buffer amount
+    char tel_buffer[512]; //I need to change buffer amount
 
     //Telemetry string========================================================
-    sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s", 
+    sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s,,%.1f,%.1f,%.1f", 
             TEAM_ID, 
             MISSION_TIME, 
             PACKET_COUNT, 
@@ -309,7 +312,10 @@ void send_telemetry() {
             GPS_LATITUDE,
             GPS_LONGITUDE,
             GPS_SATS,
-            ECHO
+            ECHO,
+            STRB_ANGLE,
+            PORT_ANGLE,
+            VECTOR_PRODUCT
             );
 
     //========================================================================
@@ -342,12 +348,20 @@ void receive_command(){
         }
         //======================================================================================
         //ECHO
+      
         strncpy(ECHO, rx_buffer, sizeof(ECHO) -  1);
+        ECHO[sizeof(ECHO) - 1] = '\0';
+
+        for (size_t i = 0; i < sizeof(ECHO); i++) {
+          if (ECHO[i] == '\0') break;
+          if (ECHO[i] == ',') ECHO[i] = '_';
+        }
         handleCommand(rx_buffer);
         rx_index = 0;
+        
       }
     }
-    else if (rx_index < 49) {
+    else if (rx_index < 127) {
       rx_buffer[rx_index++] = c;
     }
   }
@@ -355,7 +369,7 @@ void receive_command(){
 
 void handleCommand(char* message){
 
-  char temp[64];
+  char temp[128];
   strncpy(temp, message, sizeof(temp) - 1); //make a copy of message into temp bc strtok changes
   temp[sizeof(temp) - 1] = '\0';
   
@@ -518,7 +532,7 @@ void setup() {
   //===========
   // Debugging
   //===========
-  gps_online = sam_m10q.begin();
+  gps_online = sam_m10q.begin(Wire1);
   bmp_online = bmp581.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire1);
   ina_online = ina260.begin();
   bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1, BNO08X_INT);
@@ -561,7 +575,9 @@ void setup() {
 void loop() {
   collect_telemetry();
   receive_command();
-  send_telemetry();
+  if (CX == true){
+    send_telemetry();
+  }
 
   if(sw_state == "LAUNCH_PAD"){
     if(ALTITUDE >= 20 && velocity >=10){
