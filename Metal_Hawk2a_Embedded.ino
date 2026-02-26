@@ -133,7 +133,7 @@ int seconds;
 //==========
 // Commands
 //==========
-bool CX = on;
+bool CX = false;
 bool SIM_ENABLE = false;
 bool SIM_ACTIVATE = false;
 bool MMF = false;
