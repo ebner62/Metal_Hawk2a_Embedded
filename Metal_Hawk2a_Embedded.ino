@@ -9,6 +9,7 @@
 #include <SparkFun_u-blox_GNSS_v3.h> // SAM-M10Q
 #include <Adafruit_BNO08x.h> // BNO085
 #include <PWMServo.h> // Servos ofc
+#include <math.h> // for steering
 
 //======
 // Pins
@@ -46,10 +47,12 @@ const uint8_t release_s_pin = 25;
 const uint8_t port_s_pin = 29; 
 const uint8_t starboard_s_pin = 28; 
 
-int probe_release = 160; //change, also for nose_engage
+int probe_release = 160; //change
 int probe_engage = 179; //change
-int nose_release = 140; //change, also for egg_engage
+int nose_release = 140; //change
+int nose_engage = 155;
 int egg_release = 115; //change
+int egg_engage = 135;
 
 //==================
 // TARGET LOCATIONS
@@ -91,12 +94,15 @@ float velocity = 0;
 float apogee = 0;
 float release;
 
-bool nose_fired = fal, probe_fired = false, egg_fired = false;
+bool nose_fired = false, probe_fired = false, egg_fired = false;
 
 bool gps_online = false, bmp_online = false, ina_online = false, bno_online = false, sd_online = false;
 
 float last_heading = 0;
 float current_heading = 0;
+
+float ground_altitude = 0;
+float ground_pressure = 0;
 
 //=======================
 // Required Declarations
@@ -108,13 +114,16 @@ unsigned long last_telem_time = 0;
 unsigned long last_vel_time = 0;
 char rx_buffer[128]; // Command handler
 int rx_index = 0; // Command handler
-float SEALEVELPRESSURE_HPA  = (1013.25); //bmp
+float SEALEVELPRESSURE_PA  = 101325.0; //bmp
 unsigned long time_offset = 0;
 uint32_t total_seconds;
 int hours;
 int minutes;
 int seconds;
 int apogee_counter = 0;
+
+double lat_rad;
+double lon_rad;
 
 //==========
 // Commands
@@ -211,6 +220,9 @@ void collect_telemetry() {
       GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
       GPS_SATS = sam_m10q.getSIV();
       sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
+
+      lat_rad = (GPS_LATITUDE * M_PI) / 180.0;
+      lon_rad = (GPS_LONGITUDE * M_PI) / 180.0;
     }
 
     //========
@@ -233,8 +245,10 @@ void collect_telemetry() {
     }
     // Altitude filter
     if (PRESSURE > 0) {
-      float raw_altitude = 44330 * (1.0 - pow((PRESSURE / 100.0) / SEALEVELPRESSURE_HPA, 0.1903));;
-      ALTITUDE = (ALTITUDE * 0.7) + (raw_altitude * 0.3);
+      float abs_altitude = 44330 * (1.0 - pow((PRESSURE) / SEALEVELPRESSURE_PA, 0.1903));
+      float gnd_abs_altitude = 44330 * (1.0 - pow((ground_pressure) / SEALEVELPRESSURE_PA, 0.1903));
+      float current_rel_alt = abs_altitude - gnd_abs_altitude;
+      ALTITUDE = (ALTITUDE * 0.7) + (current_rel_alt * 0.3);
     }
       
     
@@ -311,9 +325,10 @@ void send_telemetry() {
     Serial8.print('\r');
     PACKET_COUNT += 1;
 
-    //Remove==========================================================================
+    //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Serial.println(TELEMETRY);
-    //************************************************************************************************
+    //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 
     if (sd_online) {
       File logFile = SD.open("flight.csv", FILE_WRITE);
@@ -343,10 +358,10 @@ void receive_command(){
       
         strncpy(ECHO, rx_buffer, sizeof(ECHO) -  1);
         ECHO[sizeof(ECHO) - 1] = '\0';
-
-//Remove**********************************************************************
+        
+        //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         Serial.print(rx_buffer);
-//Remove**********************************************************************
+        //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         for (size_t i = 0; i < sizeof(ECHO); i++) {
           if (ECHO[i] == '\0') break;
@@ -435,9 +450,12 @@ void handleCommand(char* message){
       /* CAL */
       /*=====*/
       else if (type != NULL && strcmp(type, "CAL") == 0) {
+        ground_pressure = PRESSURE;
+        ground_altitude = 0;
         ALTITUDE = 0;
         last_altitude = 0;
-        SEALEVELPRESSURE_HPA = PRESSURE;
+        SEALEVELPRESSURE_PA = PRESSURE;
+        save_flight_state();
       }
       /*=====*/
       /* MEC */
@@ -458,7 +476,7 @@ void handleCommand(char* message){
           release_s.write(nose_release);
         }
         else if (state != NULL && strcmp(state, "ENG") == 0) {
-          release_s.write(probe_release);
+          release_s.write(nose_engage);
         }
       }
       /*=====*/
@@ -469,7 +487,7 @@ void handleCommand(char* message){
           release_s.write(egg_release);
         }
         else if (state != NULL && strcmp(state, "ENG") == 0) {
-          release_s.write(nose_release);
+          release_s.write(egg_engage);
         }
       }
       /*=====*/
@@ -520,6 +538,35 @@ void setup() {
   starboard_s.attach(starboard_s_pin);
   pinMode(ledpin, OUTPUT);
 
+  //==================
+  // MID MISSION FLAG
+  //==================
+  if (MMF == true){                
+    if (sd_online) {                
+      File stateFile = SD.open("state.txt", FILE_READ);                
+      if (stateFile) {                
+        String savedData = stateFile.readString();                
+        stateFile.close();                
+    
+        if (savedData.length() > 0) {                
+          // Parse "sw_state,ground_pressure,ground_altitude,apogee"
+          int comma1 = savedData.indexOf(',');                
+          int comma2 = savedData.indexOf(',', comma1 + 1);                
+          int comma3 = savedData.indexOf(',', comma2 + 1);                
+      
+          if (comma1 != -1 && comma2 != -1 && comma3 != -1) {                
+            sw_state = savedData.substring(0, comma1);                
+            ground_pressure = savedData.substring(comma1 + 1, comma2).toFloat();                
+            ground_altitude = savedData.substring(comma2 + 1, comma3).toFloat();                
+            apogee = savedData.substring(comma3 + 1).toFloat(); 
+          
+            Serial.println("Restored state, cal, and apogee from SD");
+          }                
+        }                
+      }                
+    }                
+  }
+
   //======================================
   // Print to terminal to show connection
   //======================================
@@ -537,6 +584,7 @@ void setup() {
   //========
   // BMP581
   //========
+  float sum = 0;
   if (bmp_online){
     bmp_temp = bmp581.getTemperatureSensor();
     bmp_pressure = bmp581.getPressureSensor();
@@ -546,6 +594,18 @@ void setup() {
     bmp581.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
     bmp581.setOutputDataRate(BMP5XX_ODR_15_HZ);
     bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
+
+    //-----------------
+    // Ground Altitude
+    //-----------------
+    for(int i = 0; i < 10; i++){
+      sensors_event_t p_event;
+      bmp_pressure->getEvent(&p_event);
+      sum += 44330 * (1.0 - pow((p_event.pressure / 100.0) / 1013.25, 0.1903));
+      delay(50);
+    }
+    
+    ground_altitude = sum / 10.0;
   }
 
   //=====
@@ -578,30 +638,30 @@ void loop() {
   if(sw_state == "LAUNCH_PAD"){
     if(ALTITUDE >= 20 && velocity >=10){
       sw_state = "ASCENT";
+      save_flight_state();
     }
   }
-
   else if(sw_state == "ASCENT"){
     if(ALTITUDE > apogee){
       apogee = ALTITUDE;
     }
-    if((ALTITUDE < apogee- 5.0 ) && (velocity < -1.0)){
+    if((ALTITUDE < apogee - 5.0 ) && (velocity < -1.0)){
       apogee_counter += 1;
       if(apogee_counter >= 3){
         sw_state = "DESCENT";
+        save_flight_state();
       }
     }
     else {apogee_counter = 0;}
   }
-
   else if(sw_state == "DESCENT"){
-    if(ALTITUDE <= (apogee * 0.7)){
+    if(ALTITUDE <= apogee * 0.8 && velocity < -1.0){
       sw_state = "PROBE_RELEASE";
       release_s.write(probe_release);
       probe_fired = true;
+      save_flight_state();
     }
   }
-
   else if(sw_state == "PROBE_RELEASE"){
     steering();
     if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
@@ -612,12 +672,33 @@ void loop() {
       sw_state = "PAYLOAD_RELEASE";
       release_s.write(egg_release);
       egg_fired = true;
+      save_flight_state();
     }
   }
-
   else if(sw_state == "PAYLOAD_RELEASE"){
     if((abs(velocity) <= 0.2) && (ALTITUDE  < 5.0)){
       sw_state = "LANDED";
+      save_flight_state();
+    }
+  }
+  else if(sw_state == "LANDED"){
+    release_s.write(probe_engage);
+    digitalWrite(ledpin, (millis() / 500) % 2);
+  }
+}
+
+void save_flight_state() {
+  if (sd_online) {
+    SD.remove("state.txt");
+    File stateFile = SD.open("state.txt", FILE_WRITE);
+    if (stateFile) {
+      // Save State, Cal Data, and Apogee (4 items)
+      stateFile.print(sw_state + ",");
+      stateFile.print(String(ground_pressure) + ",");
+      stateFile.print(String(ground_altitude) + ",");
+      stateFile.print(String(apogee));
+      stateFile.close();
+      Serial.println("Saved Flight State & Calibration");
     }
   }
 }
