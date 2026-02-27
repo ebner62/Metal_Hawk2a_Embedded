@@ -73,21 +73,11 @@ char MISSION_TIME[15]; // Done it is = to GPS_TIME
 int PACKET_COUNT = 1; // Done
 char MODE = 'F'; //F or S
 String sw_state = "LAUNCH_PAD"; // Done
-float ALTITUDE; // Done
-float TEMPERATURE; // Done
-float PRESSURE; // Done
-float VOLTAGE; // Done
-float CURRENT; // Done
-float GYRO_R; // Done
-float GYRO_P; // Done
-float GYRO_Y; // Done
-float ACCEL_R; // Done
-float ACCEL_P; // Done
-float ACCEL_Y; // Done
+float ALTITUDE, TEMPERATURE, PRESSURE, VOLTAGE, CURRENT; // Done
+float GYRO_R, GYRO_P, GYRO_Y;
+float ACCEL_R, ACCEL_P, ACCEL_Y; // Done
 char GPS_TIME[15]; // Done
-double GPS_ALTITUDE; // Done
-double GPS_LATITUDE; // Done
-double GPS_LONGITUDE; // Done
+double GPS_ALTITUDE, GPS_LATITUDE, GPS_LONGITUDE; // Done
 int GPS_SATS; // Done
 char ECHO[128]; // Done
 double STRB_ANGLE = 0.0;
@@ -100,15 +90,10 @@ double VECTOR_PRODUCT = 0.0;
 float velocity = 0;
 float apogee = 0;
 float release;
-bool nose_fired = false;
-bool probe_fired = false;
-bool egg_fired = false;
 
-bool gps_online = false;
-bool bmp_online = false;
-bool ina_online = false;
-bool bno_online = false;
-bool sd_online = false;
+bool nose_fired = fal, probe_fired = false, egg_fired = false;
+
+bool gps_online = false, bmp_online = false, ina_online = false, bno_online = false, sd_online = false;
 
 float last_heading = 0;
 float current_heading = 0;
@@ -600,23 +585,17 @@ void loop() {
     if(ALTITUDE > apogee){
       apogee = ALTITUDE;
     }
-    if((ALTITUDE < apogee) - 5.0 (&& velocity < -1.0)){
+    if((ALTITUDE < apogee- 5.0 ) && (velocity < -1.0)){
       apogee_counter += 1;
       if(apogee_counter >= 3){
         sw_state = "DESCENT";
-        release = apogee * 0.8;
       }
     }
     else {apogee_counter = 0;}
   }
 
   else if(sw_state == "DESCENT"){
-    steering();
-    if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
-      release_s.write(nose_release);
-      nose_fired = true;
-    }
-    if(ALTITUDE <= release){
+    if(ALTITUDE <= (apogee * 0.7)){
       sw_state = "PROBE_RELEASE";
       release_s.write(probe_release);
       probe_fired = true;
@@ -624,6 +603,11 @@ void loop() {
   }
 
   else if(sw_state == "PROBE_RELEASE"){
+    steering();
+    if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
+      release_s.write(nose_release);
+      nose_fired = true;
+    }
     if(ALTITUDE <= 2.0){
       sw_state = "PAYLOAD_RELEASE";
       release_s.write(egg_release);
