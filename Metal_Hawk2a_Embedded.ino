@@ -15,9 +15,10 @@
 // Pins
 //======
 
-#define BNO08X_INT 19
-#define BNO08X_RESET -1
+#define BNO08X_INT 45
+#define BNO08X_RESET 44
 const int ledpin = 13;
+const int buzzer_pin = 37;
 
 const int MMF_ADDR = 0; // The memory "slot" we will use (EEPROM)
 
@@ -44,8 +45,8 @@ PWMServo port_s; //Right Pull Mechanism
 PWMServo starboard_s; //Left Pull Mechanism
 
 const uint8_t release_s_pin = 25;
-const uint8_t port_s_pin = 29; 
-const uint8_t starboard_s_pin = 28; 
+const uint8_t port_s_pin = 28; 
+const uint8_t starboard_s_pin = 29; 
 
 int probe_release = 160; //change
 int probe_engage = 179; //change
@@ -103,7 +104,8 @@ float current_heading = 0;
 
 float ground_altitude = 0;
 float ground_pressure = 0;
-
+float raw_hPa = 0;
+float sum_pressure = 0;
 //=======================
 // Required Declarations
 //=======================
@@ -114,7 +116,6 @@ unsigned long last_telem_time = 0;
 unsigned long last_vel_time = 0;
 char rx_buffer[128]; // Command handler
 int rx_index = 0; // Command handler
-float SEALEVELPRESSURE_PA  = 101325.0; //bmp
 unsigned long time_offset = 0;
 uint32_t total_seconds;
 int hours;
@@ -238,18 +239,23 @@ void collect_telemetry() {
       if (!(SIM_ENABLE && SIM_ACTIVATE)) {
         sensors_event_t pressure_event;
         bmp_pressure->getEvent(&pressure_event);
-
-        PRESSURE = pressure_event.pressure;
+        raw_hPa = pressure_event.pressure;
+        PRESSURE = raw_hPa/10;
+      }
+      else{
+        raw_hPa = PRESSURE *10.0;
       }
 
     }
     // Altitude filter
-    if (PRESSURE > 0) {
-      float abs_altitude = 44330 * (1.0 - pow((PRESSURE) / SEALEVELPRESSURE_PA, 0.1903));
-      float gnd_abs_altitude = 44330 * (1.0 - pow((ground_pressure) / SEALEVELPRESSURE_PA, 0.1903));
-      float current_rel_alt = abs_altitude - gnd_abs_altitude;
-      ALTITUDE = (ALTITUDE * 0.7) + (current_rel_alt * 0.3);
+    if (raw_hPa > 0 && ground_pressure > 0) {
+      float current_rel_alt = 44330.0 * (pow(ground_pressure / raw_hPa, 0.1903) - 1.0);
+
+      if (!isnan(current_rel_alt) && !isinf(current_rel_alt)){
+        ALTITUDE = (ALTITUDE * 0.7) + (current_rel_alt * 0.3);
+      }
     }
+
       
     
 
@@ -268,13 +274,14 @@ void collect_telemetry() {
     unsigned long current_vel_millis = millis();
     float dt_vel = (current_vel_millis - last_vel_time) / 1000.0;
 
-    if (dt_vel > 0){
+    if (dt_vel > 0 && !isnan(ALTITUDE)){
       float instant_velocity = (ALTITUDE - last_altitude) / dt_vel;
 
-      velocity = (velocity * 0.8) + (instant_velocity * 0.2);
-
-      last_altitude = ALTITUDE;
-      last_vel_time = current_vel_millis;
+      if(!isnan(instant_velocity) && !isinf(instant_velocity)) {
+        velocity = (velocity * 0.8) + (instant_velocity * 0.2);
+        last_altitude = ALTITUDE;
+        last_vel_time = current_vel_millis;
+      }
     }
   }
 
@@ -321,8 +328,8 @@ void send_telemetry() {
     //========================================================================
 
     TELEMETRY = String(tel_buffer);
-    Serial8.print(TELEMETRY);
-    Serial8.print('\r');
+    Serial5.print(TELEMETRY);
+    Serial5.print('\r');
     PACKET_COUNT += 1;
 
     //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -342,8 +349,8 @@ void send_telemetry() {
 }
 
 void receive_command(){
-  if (Serial8.available() > 0) {
-    char c = Serial8.read();
+  if (Serial5.available() > 0) {
+    char c = Serial5.read();
 
     if (c == '\n'){
       if (rx_index > 0) {
@@ -443,18 +450,22 @@ void handleCommand(char* message){
       /*======*/
       else if (type != NULL && strcmp(type, "SIMP") == 0) {
         if (SIM_ENABLE && SIM_ACTIVATE) {
-          PRESSURE = atof(state);
+          PRESSURE = atof(state) / 1000.0;
+          raw_hPa = PRESSURE * 10.0;
+          if (ground_pressure == 0){
+            ground_pressure = raw_hPa;
+            ground_altitude = 44330.0 * (1.0 - pow(ground_pressure / 1013.25, 0.1903));
+          }
         }
       }
       /*=====*/
       /* CAL */
       /*=====*/
       else if (type != NULL && strcmp(type, "CAL") == 0) {
-        ground_pressure = PRESSURE;
+        ground_pressure = raw_hPa;
         ground_altitude = 0;
         ALTITUDE = 0;
         last_altitude = 0;
-        SEALEVELPRESSURE_PA = PRESSURE;
         save_flight_state();
       }
       /*=====*/
@@ -496,22 +507,6 @@ void handleCommand(char* message){
       else if (type != NULL && strcmp(type, "LED") == 0) {
         digitalWrite(ledpin, !digitalRead(ledpin));
       }
-      /*======*/
-      /* PORT */
-      /*======*/
-      else if ((type != NULL && strcmp(type, "PORT") == 0)) {
-        if (type != NULL) {
-          port_s.write(atoi(state));
-        }
-      }
-      /*===========*/
-      /* STARBOARD */
-      /*===========*/
-      else if ((type != NULL && strcmp(type, "STRB") == 0)) {
-        if (state !=NULL) {
-          starboard_s.write(atoi(state));
-        }
-      }
       /*=====*/
       /* MMF */
       /*=====*/
@@ -519,10 +514,12 @@ void handleCommand(char* message){
         if (state != NULL && strcmp(state, "TRUE") == 0) {
           MMF = true;
           EEPROM.write(MMF_ADDR, 1);
+          save_flight_state();
         } 
         else if (state != NULL && strcmp(state, "FALSE") == 0) {
           MMF = false;
           EEPROM.write(MMF_ADDR, 0);
+          sw_state = "LAUNCH_PAD";
         }
       }
           
@@ -531,16 +528,30 @@ void handleCommand(char* message){
 }
 
 void setup() {
-  Serial8.begin(9600);
+  Serial5.begin(9600);
+  Serial3.begin(9600);
+  Wire1.setSDA(16);
+  Wire1.setSCL(17);
   Wire1.begin();
   release_s.attach(release_s_pin);
   port_s.attach(port_s_pin);
   starboard_s.attach(starboard_s_pin);
   pinMode(ledpin, OUTPUT);
+  pinMode(buzzer_pin, OUTPUT);
+
+  //===========
+  // Debugging
+  //===========
+  gps_online = sam_m10q.begin(Serial3);
+  bmp_online = bmp581.begin(BMP5XX_DEFAULT_ADDRESS, &Wire1);
+  ina_online = ina260.begin(0x40, &Wire1);
+  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1, BNO08X_INT);
+  sd_online = SD.begin(chipSelect);
 
   //==================
   // MID MISSION FLAG
   //==================
+  MMF = EEPROM.read(MMF_ADDR);
   if (MMF == true){                
     if (sd_online) {                
       File stateFile = SD.open("state.txt", FILE_READ);                
@@ -559,8 +570,6 @@ void setup() {
             ground_pressure = savedData.substring(comma1 + 1, comma2).toFloat();                
             ground_altitude = savedData.substring(comma2 + 1, comma3).toFloat();                
             apogee = savedData.substring(comma3 + 1).toFloat(); 
-          
-            Serial.println("Restored state, cal, and apogee from SD");
           }                
         }                
       }                
@@ -571,15 +580,6 @@ void setup() {
   // Print to terminal to show connection
   //======================================
   Serial.println("Intitalizing Metal_Hawk2a");
-
-  //===========
-  // Debugging
-  //===========
-  gps_online = sam_m10q.begin(Wire1);
-  bmp_online = bmp581.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire1);
-  ina_online = ina260.begin();
-  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1, BNO08X_INT);
-  sd_online = SD.begin(chipSelect);
 
   //========
   // BMP581
@@ -598,21 +598,26 @@ void setup() {
     //-----------------
     // Ground Altitude
     //-----------------
-    for(int i = 0; i < 10; i++){
+    for(int i = 0; i < 20; i++){
       sensors_event_t p_event;
       bmp_pressure->getEvent(&p_event);
-      sum += 44330 * (1.0 - pow((p_event.pressure / 100.0) / 1013.25, 0.1903));
+      float current_p = p_event.pressure;
+      
+      sum += 44330.0 * (1.0 - pow(p_event.pressure / 1013.25, 0.1903));
+      sum_pressure += current_p;
+
       delay(50);
     }
     
-    ground_altitude = sum / 10.0;
+    ground_altitude = 0;
+    ground_pressure = sum_pressure / 20.0;
   }
 
   //=====
   // GPS
   //=====
   if (gps_online){
-    sam_m10q.setI2COutput(COM_TYPE_UBX);
+    sam_m10q.setUART1Output(COM_TYPE_UBX);
   }
 
   //========
@@ -678,12 +683,17 @@ void loop() {
   else if(sw_state == "PAYLOAD_RELEASE"){
     if((abs(velocity) <= 0.2) && (ALTITUDE  < 5.0)){
       sw_state = "LANDED";
+      release_s.write(probe_engage);
       save_flight_state();
     }
   }
   else if(sw_state == "LANDED"){
-    release_s.write(probe_engage);
     digitalWrite(ledpin, (millis() / 500) % 2);
+    if ((millis() / 1000) % 2 == 0) {
+        analogWrite(buzzer_pin, 128); // Beep on
+    } else {
+        analogWrite(buzzer_pin, 0);   // Beep off
+    }
   }
 }
 
