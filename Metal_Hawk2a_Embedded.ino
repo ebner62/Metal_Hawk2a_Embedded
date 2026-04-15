@@ -8,8 +8,10 @@
 #include <Adafruit_INA260.h> //INA260
 #include <SparkFun_u-blox_GNSS_v3.h> // SAM-M10Q
 #include <Adafruit_BNO08x.h> // BNO085
-#include <PWMServo.h> // Servos ofc
+#include <Servo.h> // Servos ofc
 #include <math.h> // for steering
+#include <SerialPIO.h> // creates uarts
+
 
 //======
 // Pins
@@ -17,12 +19,18 @@
 
 #define BNO08X_INT 45
 #define BNO08X_RESET 44
-const int ledpin = 13;
-const int buzzer_pin = 37;
+const int ledpin = LED_BUILTIN;
+const byte scl_one = 27;
+const byte sda_one = 26;
+const byte scl_zero = 9;
+const byte sda_zero = 8;
+SerialPIO ground_cam_serial(14, 15); //change pins
+
+//****************************************//
 
 const int MMF_ADDR = 0; // The memory "slot" we will use (EEPROM)
 
-const int chipSelect = BUILTIN_SDCARD; //SD card
+const int chipSelect = 22; //SD card
 
 //=========
 // Sensors
@@ -40,9 +48,9 @@ Adafruit_INA260 ina260 = Adafruit_INA260();
 //=======
 // Servo
 //=======
-PWMServo release_s; //Release Mechanism
-PWMServo port_s; //Right Pull Mechanism
-PWMServo starboard_s; //Left Pull Mechanism
+Servo release_s; //Release Mechanism
+Servo port_s; //Right Pull Mechanism
+Servo starboard_s; //Left Pull Mechanism
 
 const uint8_t release_s_pin = 25;
 const uint8_t port_s_pin = 28; 
@@ -106,6 +114,7 @@ float ground_altitude = 0;
 float ground_pressure = 0;
 float raw_hPa = 0;
 float sum_pressure = 0;
+
 //=======================
 // Required Declarations
 //=======================
@@ -134,6 +143,13 @@ bool SIM_ENABLE = false;
 bool SIM_ACTIVATE = false;
 bool MMF = false;
 
+//=========
+// Cameras
+//=========
+
+uint8_t cmd_ShortPress[] = {0xCC, 0x01, 0x01, 0xD9}; // Start/Stop Record
+uint8_t cmd_LongPress[]  = {0xCC, 0x01, 0x02, 0x72}; // Power On/Off Toggle
+
 void steering() {
   //static double last_lat = GPS_LATITUDE;
   //static double last_lon = GPS_LONGITUDE;
@@ -144,6 +160,195 @@ void steering() {
   if (((GPS_LATITUDE >= (target_lat_one - 0.00005)) && (GPS_LATITUDE <= (target_lat_one + 0.00005))) && 
      ((GPS_LONGITUDE >= (target_lon_one - 0.00005)) && (GPS_LONGITUDE <= (target_lon_one + 0.00005)))){
     target_one_reached = true;
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  Serial1.begin(9600);
+  pinMode(ledpin, OUTPUT);
+  
+  ground_cam_serial.begin(115200);
+  Serial2.begin(115200); //Release mech cam
+
+  Wire1.setSDA(sda_one);
+  Wire1.setSCL(scl_one);
+  Wire1.begin();
+  Wire1.setClock(100000);
+
+  Wire.setSDA(sda_zero);
+  Wire.setSCL(scl_zero);
+  Wire.begin();
+  Wire.setClock(100000);
+
+  release_s.attach(release_s_pin);
+  port_s.attach(port_s_pin);
+  starboard_s.attach(starboard_s_pin);
+  delay(100);
+
+  //===========
+  // GPS & INA
+  //===========
+  gps_online = sam_m10q.begin(Wire1, 0x42);
+  if (!gps_online) {
+    delay(500);
+    gps_online = sam_m10q.begin(Wire1, 0x42); // Second attempt
+  }
+  ina_online = ina260.begin(0x40, &Wire1);
+
+  //===========
+  // BMP & BNO
+  //===========
+  bmp_online = bmp581.begin(BMP5XX_DEFAULT_ADDRESS, &Wire);
+  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire, BNO08X_INT);
+
+  sd_online = SD.begin(chipSelect);
+
+  //==================
+  // MID MISSION FLAG
+  //==================
+  MMF = EEPROM.read(MMF_ADDR);
+  if (MMF == true){                
+    if (sd_online) {                
+      File stateFile = SD.open("state.txt", FILE_READ);                
+      if (stateFile) {                
+        String savedData = stateFile.readString();                
+        stateFile.close();                
+    
+        if (savedData.length() > 0) {                
+          // Parse "sw_state,ground_pressure,ground_altitude,apogee"
+          int comma1 = savedData.indexOf(',');                
+          int comma2 = savedData.indexOf(',', comma1 + 1);                
+          int comma3 = savedData.indexOf(',', comma2 + 1);                
+      
+          if (comma1 != -1 && comma2 != -1 && comma3 != -1) {                
+            sw_state = savedData.substring(0, comma1);                
+            ground_pressure = savedData.substring(comma1 + 1, comma2).toFloat();                
+            ground_altitude = savedData.substring(comma2 + 1, comma3).toFloat();                
+            apogee = savedData.substring(comma3 + 1).toFloat(); 
+          }                
+        }                
+      }                
+    }                
+  }
+
+  //======================================
+  // Print to terminal to show connection
+  //======================================
+  Serial.println("Intitalizing Metal_Hawk2a");
+
+  //========
+  // BMP581
+  //========
+  float sum = 0;
+  if (bmp_online){
+    bmp_temp = bmp581.getTemperatureSensor();
+    bmp_pressure = bmp581.getPressureSensor();
+
+    bmp581.setTemperatureOversampling(BMP5XX_OVERSAMPLING_2X);
+    bmp581.setPressureOversampling(BMP5XX_OVERSAMPLING_16X);
+    bmp581.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
+    bmp581.setOutputDataRate(BMP5XX_ODR_15_HZ);
+    bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
+
+    //-----------------
+    // Ground Altitude
+    //-----------------
+    for(int i = 0; i < 20; i++){
+      sensors_event_t p_event;
+      bmp_pressure->getEvent(&p_event);
+      float current_p = p_event.pressure;
+      
+      sum += 44330.0 * (1.0 - pow(p_event.pressure / 1013.25, 0.1903));
+      sum_pressure += current_p;
+
+      delay(50);
+    }
+    
+    ground_altitude = 0;
+    ground_pressure = sum_pressure / 20.0;
+  }
+
+  //=====
+  // GPS
+  //=====
+  if (gps_online){
+    sam_m10q.setI2COutput(COM_TYPE_UBX);
+    sam_m10q.saveConfigSelective(VAL_CFG_SUBSEC_IOPORT);
+  }
+
+  //========
+  // BNO085
+  //========
+  if (bno_online){
+    bno085.enableReport(SH2_ROTATION_VECTOR);
+    //bno085.enableReport(SH2_ACCELEROMETER);
+    bno085.enableReport(SH2_GYROSCOPE_CALIBRATED);
+    bno_last_micros = micros();
+  }
+
+}
+
+
+void loop() {
+  collect_telemetry();
+  receive_command();
+  if (CX == true){
+    send_telemetry();
+  }
+
+  if(sw_state == "LAUNCH_PAD"){
+    if(ALTITUDE >= 20 && velocity >=10){
+      sw_state = "ASCENT";
+      save_flight_state();
+    }
+  }
+  else if(sw_state == "ASCENT"){
+    if(ALTITUDE > apogee){
+      apogee = ALTITUDE;
+    }
+    if((ALTITUDE < apogee - 5.0 ) && (velocity < -1.0)){
+      apogee_counter += 1;
+      if(apogee_counter >= 3){
+        sw_state = "DESCENT";
+        save_flight_state();
+      }
+    }
+    else {apogee_counter = 0;}
+  }
+  else if(sw_state == "DESCENT"){
+    if(ALTITUDE <= apogee * 0.8 && velocity < -1.0){
+      sw_state = "PROBE_RELEASE";
+      release_s.write(probe_release);
+      probe_fired = true;
+      save_flight_state();
+    }
+  }
+  else if(sw_state == "PROBE_RELEASE"){
+    steering();
+    if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
+      release_s.write(nose_release);
+      nose_fired = true;
+    }
+    if(ALTITUDE <= 2.0){
+      sw_state = "PAYLOAD_RELEASE";
+      release_s.write(egg_release);
+      egg_fired = true;
+      save_flight_state();
+    }
+  }
+  else if(sw_state == "PAYLOAD_RELEASE"){
+    if((abs(velocity) <= 0.2) && (ALTITUDE  < 5.0)){
+      sw_state = "LANDED";
+      release_s.write(probe_engage);
+      save_flight_state();
+    }
+  }
+  else if(sw_state == "LANDED"){
+    digitalWrite(ledpin, (millis() / 500) % 2);
+    if ((millis() / 1000) % 2 == 0) {
+        
+    }
   }
 }
 
@@ -215,7 +420,7 @@ void collect_telemetry() {
     //==========
     // SAM-M10Q
     //==========
-    if (gps_online){
+    if (gps_online && sam_m10q.getPVT()){
       GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
       GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
       GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
@@ -328,8 +533,8 @@ void send_telemetry() {
     //========================================================================
 
     TELEMETRY = String(tel_buffer);
-    Serial5.print(TELEMETRY);
-    Serial5.print('\r');
+    Serial1.print(TELEMETRY);
+    Serial1.print('\r');
     PACKET_COUNT += 1;
 
     //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -349,8 +554,8 @@ void send_telemetry() {
 }
 
 void receive_command(){
-  if (Serial5.available() > 0) {
-    char c = Serial5.read();
+  if (Serial1.available() > 0) {
+    char c = Serial1.read();
 
     if (c == '\n'){
       if (rx_index > 0) {
@@ -365,10 +570,6 @@ void receive_command(){
       
         strncpy(ECHO, rx_buffer, sizeof(ECHO) -  1);
         ECHO[sizeof(ECHO) - 1] = '\0';
-        
-        //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        Serial.print(rx_buffer);
-        //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         for (size_t i = 0; i < sizeof(ECHO); i++) {
           if (ECHO[i] == '\0') break;
@@ -522,178 +723,29 @@ void handleCommand(char* message){
           sw_state = "LAUNCH_PAD";
         }
       }
-          
-    }  
-  }
-}
-
-void setup() {
-  Serial5.begin(9600);
-  Serial3.begin(9600);
-  Wire1.setSDA(16);
-  Wire1.setSCL(17);
-  Wire1.begin();
-  release_s.attach(release_s_pin);
-  port_s.attach(port_s_pin);
-  starboard_s.attach(starboard_s_pin);
-  pinMode(ledpin, OUTPUT);
-  pinMode(buzzer_pin, OUTPUT);
-
-  //===========
-  // Debugging
-  //===========
-  gps_online = sam_m10q.begin(Serial3);
-  bmp_online = bmp581.begin(BMP5XX_DEFAULT_ADDRESS, &Wire1);
-  ina_online = ina260.begin(0x40, &Wire1);
-  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1, BNO08X_INT);
-  sd_online = SD.begin(chipSelect);
-
-  //==================
-  // MID MISSION FLAG
-  //==================
-  MMF = EEPROM.read(MMF_ADDR);
-  if (MMF == true){                
-    if (sd_online) {                
-      File stateFile = SD.open("state.txt", FILE_READ);                
-      if (stateFile) {                
-        String savedData = stateFile.readString();                
-        stateFile.close();                
-    
-        if (savedData.length() > 0) {                
-          // Parse "sw_state,ground_pressure,ground_altitude,apogee"
-          int comma1 = savedData.indexOf(',');                
-          int comma2 = savedData.indexOf(',', comma1 + 1);                
-          int comma3 = savedData.indexOf(',', comma2 + 1);                
-      
-          if (comma1 != -1 && comma2 != -1 && comma3 != -1) {                
-            sw_state = savedData.substring(0, comma1);                
-            ground_pressure = savedData.substring(comma1 + 1, comma2).toFloat();                
-            ground_altitude = savedData.substring(comma2 + 1, comma3).toFloat();                
-            apogee = savedData.substring(comma3 + 1).toFloat(); 
-          }                
-        }                
-      }                
-    }                
-  }
-
-  //======================================
-  // Print to terminal to show connection
-  //======================================
-  Serial.println("Intitalizing Metal_Hawk2a");
-
-  //========
-  // BMP581
-  //========
-  float sum = 0;
-  if (bmp_online){
-    bmp_temp = bmp581.getTemperatureSensor();
-    bmp_pressure = bmp581.getPressureSensor();
-
-    bmp581.setTemperatureOversampling(BMP5XX_OVERSAMPLING_2X);
-    bmp581.setPressureOversampling(BMP5XX_OVERSAMPLING_16X);
-    bmp581.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
-    bmp581.setOutputDataRate(BMP5XX_ODR_15_HZ);
-    bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
-
-    //-----------------
-    // Ground Altitude
-    //-----------------
-    for(int i = 0; i < 20; i++){
-      sensors_event_t p_event;
-      bmp_pressure->getEvent(&p_event);
-      float current_p = p_event.pressure;
-      
-      sum += 44330.0 * (1.0 - pow(p_event.pressure / 1013.25, 0.1903));
-      sum_pressure += current_p;
-
-      delay(50);
-    }
-    
-    ground_altitude = 0;
-    ground_pressure = sum_pressure / 20.0;
-  }
-
-  //=====
-  // GPS
-  //=====
-  if (gps_online){
-    sam_m10q.setUART1Output(COM_TYPE_UBX);
-  }
-
-  //========
-  // BNO085
-  //========
-  if (bno_online){
-    bno085.enableReport(SH2_ROTATION_VECTOR);
-    //bno085.enableReport(SH2_ACCELEROMETER);
-    bno085.enableReport(SH2_GYROSCOPE_CALIBRATED);
-    bno_last_micros = micros();
-  }
-
-}
-
-
-void loop() {
-  collect_telemetry();
-  receive_command();
-  if (CX == true){
-    send_telemetry();
-  }
-
-  if(sw_state == "LAUNCH_PAD"){
-    if(ALTITUDE >= 20 && velocity >=10){
-      sw_state = "ASCENT";
-      save_flight_state();
-    }
-  }
-  else if(sw_state == "ASCENT"){
-    if(ALTITUDE > apogee){
-      apogee = ALTITUDE;
-    }
-    if((ALTITUDE < apogee - 5.0 ) && (velocity < -1.0)){
-      apogee_counter += 1;
-      if(apogee_counter >= 3){
-        sw_state = "DESCENT";
-        save_flight_state();
+      /*======*/
+      /* GCAM */
+      /*======*/
+      else if ((type != NULL && strcmp(type, "GCAM") == 0)) {
+        if (state != NULL && strcmp(state, "ON") == 0) {
+          power_g_cam();
+        }
+        else if (state != NULL && strcmp(state, "RECORD") == 0){
+          record_g_cam();
+        }
       }
-    }
-    else {apogee_counter = 0;}
-  }
-  else if(sw_state == "DESCENT"){
-    if(ALTITUDE <= apogee * 0.8 && velocity < -1.0){
-      sw_state = "PROBE_RELEASE";
-      release_s.write(probe_release);
-      probe_fired = true;
-      save_flight_state();
-    }
-  }
-  else if(sw_state == "PROBE_RELEASE"){
-    steering();
-    if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
-      release_s.write(nose_release);
-      nose_fired = true;
-    }
-    if(ALTITUDE <= 2.0){
-      sw_state = "PAYLOAD_RELEASE";
-      release_s.write(egg_release);
-      egg_fired = true;
-      save_flight_state();
-    }
-  }
-  else if(sw_state == "PAYLOAD_RELEASE"){
-    if((abs(velocity) <= 0.2) && (ALTITUDE  < 5.0)){
-      sw_state = "LANDED";
-      release_s.write(probe_engage);
-      save_flight_state();
-    }
-  }
-  else if(sw_state == "LANDED"){
-    digitalWrite(ledpin, (millis() / 500) % 2);
-    if ((millis() / 1000) % 2 == 0) {
-        analogWrite(buzzer_pin, 128); // Beep on
-    } else {
-        analogWrite(buzzer_pin, 0);   // Beep off
-    }
+      /*======*/
+      /* DCAM */
+      /*======*/
+      else if ((type != NULL && strcmp(type, "DCAM") == 0)) {
+        if (state != NULL && strcmp(state, "ON") == 0) {
+          power_d_cam();
+        }
+        else if (state != NULL && strcmp(state, "RECORD") == 0) {
+          record_d_cam();
+        }
+      }
+    }  
   }
 }
 
@@ -711,4 +763,20 @@ void save_flight_state() {
       Serial.println("Saved Flight State & Calibration");
     }
   }
+}
+
+void record_d_cam(bool start) { //Deployment
+  Serial2.write(cmd_ShortPress, sizeof(cmd_ShortPress));
+}
+
+void record_g_cam(bool start) { //Ground
+  ground_cam_serial.write(cmd_ShortPress, sizeof(cmd_ShortPress));
+}
+
+void power_d_cam() {
+  Serial2.write(cmd_LongPress, sizeof(cmd_LongPress));
+}
+
+void power_g_cam() {
+  ground_cam_serial.write(cmd_LongPress, sizeof(cmd_LongPress));
 }
