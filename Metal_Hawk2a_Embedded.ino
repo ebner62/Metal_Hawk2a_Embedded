@@ -17,8 +17,8 @@
 // Pins
 //======
 
-#define BNO08X_INT 45
-#define BNO08X_RESET 44
+#define BNO08X_INT 10
+#define BNO08X_RESET 11
 const int ledpin = LED_BUILTIN;
 const byte scl_one = 27;
 const byte sda_one = 26;
