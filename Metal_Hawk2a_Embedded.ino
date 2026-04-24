@@ -165,10 +165,19 @@ void steering() {
 
 void setup() {
   Serial.begin(9600);
+
+  unsigned long start = millis();
+  while (!Serial && (millis() - start < 3000));
+  
+  Serial1.setTX(12);
+  Serial1.setRX(13);
   Serial1.begin(9600);
   pinMode(ledpin, OUTPUT);
   
   ground_cam_serial.begin(115200);
+
+  Serial2.setTX(4);
+  Serial2.setRX(5);
   Serial2.begin(115200); //Release mech cam
 
   Wire1.setSDA(sda_one);
@@ -180,6 +189,11 @@ void setup() {
   Wire.setSCL(scl_zero);
   Wire.begin();
   Wire.setClock(100000);
+
+  //remove====================
+  Wire.setTimeout(100);
+  Wire1.setTimeout(100);
+  //==========================
 
   release_s.attach(release_s_pin);
   port_s.attach(port_s_pin);
@@ -461,10 +475,6 @@ void collect_telemetry() {
       }
     }
 
-      
-    
-
-
     //========
     // INA260
     //========
@@ -731,7 +741,7 @@ void handleCommand(char* message){
           power_g_cam();
         }
         else if (state != NULL && strcmp(state, "RECORD") == 0){
-          record_g_cam();
+          record_g_cam(true);
         }
       }
       /*======*/
@@ -742,7 +752,7 @@ void handleCommand(char* message){
           power_d_cam();
         }
         else if (state != NULL && strcmp(state, "RECORD") == 0) {
-          record_d_cam();
+          record_d_cam(true);
         }
       }
     }  
