@@ -11,7 +11,7 @@
 #include <Servo.h> // Servos ofc
 #include <math.h> // for steering
 #include <SerialPIO.h> // creates uarts
-
+#include <cmath> 
 
 //======
 // Pins
@@ -115,6 +115,47 @@ float ground_pressure = 0;
 float raw_hPa = 0;
 float sum_pressure = 0;
 
+//============Rudra===========
+// --- Bezier & PID Globals ---
+const int RADIUS = 6371000;
+struct Point2D { double x; double y; };
+
+// Target/Gate Coordinates (Radians) - Calculated once in setup
+double TARGET_LAT_RAD, TARGET_LON_RAD;
+double GATE1_LAT_RAD, GATE1_LON_RAD, GATE2_LAT_RAD, GATE2_LON_RAD;
+
+// Navigation Points in Meters
+Point2D p0, p1, p2; 
+Point2D gate1_m, gate2_m;
+bool curve_generated = false;
+
+struct PIDController {
+    double Kp, Ki, Kd;
+    double integral_sum = 0, last_error = 0, last_derivative = 0;
+    unsigned long last_time = 0;
+    double filter_alpha = 0.5;
+
+    PIDController(double p, double i, double d) : Kp(p), Ki(i), Kd(d) {}
+
+    double compute(double error) {
+        if (std::abs(error) < 0.05) error = 0;
+        unsigned long now = millis();
+        if (last_time == 0) { last_time = now; last_error = error; return 0; }
+        double dt = (now - last_time) / 1000.0;
+        if (dt <= 0) return 0;
+
+        integral_sum = constrain(integral_sum + (error * dt), -1.0, 1.0);
+        double raw_der = (error - last_error) / dt;
+        double filtered_der = (filter_alpha * raw_der) + ((1 - filter_alpha) * last_derivative);
+        
+        last_error = error; last_time = now; last_derivative = filtered_der;
+        return (Kp * error) + (Ki * integral_sum) + (Kd * filtered_der);
+    }
+};
+
+PIDController steeringPID(400.0, 0.0, 50.0); // Adjust Kp/Kd based on servo response
+//============================
+
 //=======================
 // Required Declarations
 //=======================
@@ -150,19 +191,6 @@ bool MMF = false;
 uint8_t cmd_ShortPress[] = {0xCC, 0x01, 0x01, 0xD9}; // Start/Stop Record
 uint8_t cmd_LongPress[]  = {0xCC, 0x01, 0x02, 0x72}; // Power On/Off Toggle
 
-void steering() {
-  //static double last_lat = GPS_LATITUDE;
-  //static double last_lon = GPS_LONGITUDE;
-
-  //double lat_moved = (GPS_LATITUDE - last_lat);
-  //double lon_moved = (GPS_LONGITUDE - last_lon);
-
-  if (((GPS_LATITUDE >= (target_lat_one - 0.00005)) && (GPS_LATITUDE <= (target_lat_one + 0.00005))) && 
-     ((GPS_LONGITUDE >= (target_lon_one - 0.00005)) && (GPS_LONGITUDE <= (target_lon_one + 0.00005)))){
-    target_one_reached = true;
-  }
-}
-
 void setup() {
   Serial.begin(9600);
 
@@ -189,11 +217,6 @@ void setup() {
   Wire.setSCL(scl_zero);
   Wire.begin();
   Wire.setClock(100000);
-
-  //remove====================
-  Wire.setTimeout(100);
-  Wire1.setTimeout(100);
-  //==========================
 
   release_s.attach(release_s_pin);
   port_s.attach(port_s_pin);
@@ -301,6 +324,19 @@ void setup() {
     bno_last_micros = micros();
   }
 
+  //====================================================================Rudra===============
+  // Initialize competition coordinates
+  TARGET_LAT_RAD = dmsToRadians(31, 7, 20.9);
+  TARGET_LON_RAD = -dmsToRadians(86, 5, 33.02);
+  GATE1_LAT_RAD = dmsToRadians(31, 7, 21.05);
+  GATE1_LON_RAD = -dmsToRadians(86, 5, 29.28);
+  GATE2_LAT_RAD = dmsToRadians(31, 7, 20.86);
+  GATE2_LON_RAD = -dmsToRadians(86, 5, 36.82);
+
+  // Set p2 (Target) as the origin (0,0)
+  p2 = {0, 0};
+  gate1_m = gps_to_meters(GATE1_LAT_RAD, GATE1_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
+  gate2_m = gps_to_meters(GATE2_LAT_RAD, GATE2_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
 }
 
 
@@ -339,7 +375,7 @@ void loop() {
     }
   }
   else if(sw_state == "PROBE_RELEASE"){
-    steering();
+
     if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
       release_s.write(nose_release);
       nose_fired = true;
@@ -349,6 +385,38 @@ void loop() {
       release_s.write(egg_release);
       egg_fired = true;
       save_flight_state();
+    }
+    if (!curve_generated && gps_online) {
+      p0 = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
+      
+      // Dynamic Gate Selection: Choose the gate closest to our release point
+      double d1 = sqrt(pow(p0.x - gate1_m.x, 2) + pow(p0.y - gate1_m.y, 2));
+      double d2 = sqrt(pow(p0.x - gate2_m.x, 2) + pow(p0.y - gate2_m.y, 2));
+      p1 = (d1 < d2) ? gate1_m : gate2_m;
+      
+      curve_generated = true;
+    }
+
+    // 2. Active Steering Logic
+    if (curve_generated) {
+      Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
+      double heading_rad = current_heading * (M_PI / 180.0);
+      
+      // Get error and compute PID correction
+      double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
+      double correction = steeringPID.compute(error);
+
+      // Map to servos (90 is neutral)
+      int p_out = 90 + (int)correction;
+      int s_out = 90 - (int)correction;
+
+      port_s.write(constrain(p_out, 45, 135));
+      starboard_s.write(constrain(s_out, 45, 135));
+
+      // Update telemetry variables
+      VECTOR_PRODUCT = error;
+      PORT_ANGLE = p_out;
+      STRB_ANGLE = s_out;
     }
   }
   else if(sw_state == "PAYLOAD_RELEASE"){
@@ -789,4 +857,50 @@ void power_d_cam() {
 
 void power_g_cam() {
   ground_cam_serial.write(cmd_LongPress, sizeof(cmd_LongPress));
+}
+
+//============================================================Rudra======================
+
+Point2D gps_to_meters(double lat_rad, double lon_rad, double ref_lat, double ref_lon) { 
+    Point2D pos;
+    pos.y = (lat_rad - ref_lat) * RADIUS;
+    pos.x = (lon_rad - ref_lon) * RADIUS * std::cos((ref_lat + lat_rad) / 2.0);
+    return pos;
+}
+
+Point2D quadBezier(double t, Point2D p0, Point2D p1, Point2D p2) {
+    double u = 1.0 - t;
+    Point2D p;
+    p.x = (u * u) * p0.x + 2 * u * t * p1.x + (t * t) * p2.x;
+    p.y = (u * u) * p0.y + 2 * u * t * p1.y + (t * t) * p2.y;
+    return p;
+}
+
+Point2D get_active_target(Point2D current_pos, Point2D p0, Point2D p1, Point2D p2) {
+    double closest_t = 0, min_dist = 999999; 
+    for (double t = 0; t <= 1.0; t += 0.05) {
+        Point2D curve_pt = quadBezier(t, p0, p1, p2);
+        double d = std::sqrt(pow(curve_pt.x - current_pos.x, 2) + pow(curve_pt.y - current_pos.y, 2));
+        if (d < min_dist) { min_dist = d; closest_t = t; }
+    }
+    return quadBezier(std::min(closest_t + 0.10, 1.0), p0, p1, p2);
+}
+
+double calculate_steering_error(Point2D current_pos, double heading_rad, Point2D p0, Point2D p1, Point2D p2) {
+    Point2D target = get_active_target(current_pos, p0, p1, p2);
+    double Tx = target.x - current_pos.x, Ty = target.y - current_pos.y;
+    double mag = sqrt(Tx*Tx + Ty*Ty);
+    if (mag > 0) { Tx /= mag; Ty /= mag; }
+    
+    double Hx = sin(heading_rad), Hy = cos(heading_rad);
+    double cross = (Hx * Ty) - (Hy * Tx);
+    double dot = (Hx * Tx) + (Hy * Ty);
+    
+    if (dot < 0) return (cross > 0) ? 1.0 : -1.0; // Target behind, hard turn
+    return cross;
+}
+
+double dmsToRadians(double degrees, double minutes, double seconds) {
+    double decimalDegrees = degrees + (minutes / 60.0) + (seconds / 3600.0);
+    return decimalDegrees * (M_PI / 180.0);
 }
