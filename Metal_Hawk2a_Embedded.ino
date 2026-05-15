@@ -39,7 +39,7 @@ Adafruit_BMP5xx bmp581; //Declaring BMP581
 bmp5xx_powermode_t desiredMode = BMP5XX_POWERMODE_NORMAL; // Cache desired power mode
 SFE_UBLOX_GNSS sam_m10q; //Declaring SAM-M10Q
 Adafruit_Sensor *bmp_temp = NULL;
-Adafruit_Sensor *bmp_pressure = NULL;
+Adafruit_Sensor *bmp_pressure = NULL; 
 Adafruit_BNO08x  bno085(BNO08X_RESET);
 sh2_SensorValue_t sensorValue; //bno idk what we use it for
 Adafruit_INA260 ina260 = Adafruit_INA260();
@@ -52,9 +52,9 @@ Servo release_s; //Release Mechanism
 Servo port_s; //Right Pull Mechanism
 Servo starboard_s; //Left Pull Mechanism
 
-const uint8_t release_s_pin = 25;
-const uint8_t port_s_pin = 28; 
-const uint8_t starboard_s_pin = 29; 
+const uint8_t release_s_pin = 2;
+const uint8_t port_s_pin = 1; 
+const uint8_t starboard_s_pin = 0; 
 
 int probe_release = 160; //change
 int probe_engage = 179; //change
@@ -193,6 +193,7 @@ uint8_t cmd_LongPress[]  = {0xCC, 0x01, 0x02, 0x72}; // Power On/Off Toggle
 
 void setup() {
   Serial.begin(9600);
+  delay(500);
 
   unsigned long start = millis();
   while (!Serial && (millis() - start < 3000));
@@ -208,20 +209,31 @@ void setup() {
   Serial2.setRX(5);
   Serial2.begin(115200); //Release mech cam
 
+  Wire.setSDA(sda_zero);
+  Wire.setSCL(scl_zero);
+  Wire.begin();
+  Wire.setClock(100000); // Start slow for stability
+  delay(100); // Give the bus a moment to stabilize;
+
   Wire1.setSDA(sda_one);
   Wire1.setSCL(scl_one);
   Wire1.begin();
   Wire1.setClock(100000);
 
-  Wire.setSDA(sda_zero);
-  Wire.setSCL(scl_zero);
-  Wire.begin();
-  Wire.setClock(100000);
-
   release_s.attach(release_s_pin);
   port_s.attach(port_s_pin);
   starboard_s.attach(starboard_s_pin);
   delay(100);
+
+  //===========
+  // BMP & BNO
+  //===========
+  ///
+  bmp_online = bmp581.begin(0x46, &Wire);
+  if (!bmp_online) bmp_online = bmp581.begin(0x47, &Wire);
+  bno_online = false;
+  sd_online = SD.begin(chipSelect);
+  
 
   //===========
   // GPS & INA
@@ -232,14 +244,6 @@ void setup() {
     gps_online = sam_m10q.begin(Wire1, 0x42); // Second attempt
   }
   ina_online = ina260.begin(0x40, &Wire1);
-
-  //===========
-  // BMP & BNO
-  //===========
-  bmp_online = bmp581.begin(BMP5XX_DEFAULT_ADDRESS, &Wire);
-  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire, BNO08X_INT);
-
-  sd_online = SD.begin(chipSelect);
 
   //==================
   // MID MISSION FLAG
@@ -277,28 +281,31 @@ void setup() {
   //========
   // BMP581
   //========
-  float sum = 0;
   if (bmp_online){
     bmp_temp = bmp581.getTemperatureSensor();
     bmp_pressure = bmp581.getPressureSensor();
+    //
+    Serial.print("BMP init: "); Serial.println(bmp_online ? "SUCCESS" : "FAILED");
+    //bno_online = bno085.begin_I2C(0x47, &Wire, BNO08X_INT);
 
     bmp581.setTemperatureOversampling(BMP5XX_OVERSAMPLING_2X);
     bmp581.setPressureOversampling(BMP5XX_OVERSAMPLING_16X);
-    bmp581.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
-    bmp581.setOutputDataRate(BMP5XX_ODR_15_HZ);
-    bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
+    //bmp581.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
+    //bmp581.setOutputDataRate(BMP5XX_ODR_50_HZ);
+    //bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
+
+    float sum_alt = 0;
+    sum_pressure = 0;
 
     //-----------------
     // Ground Altitude
     //-----------------
-    for(int i = 0; i < 20; i++){
-      sensors_event_t p_event;
-      bmp_pressure->getEvent(&p_event);
-      float current_p = p_event.pressure;
-      
-      sum += 44330.0 * (1.0 - pow(p_event.pressure / 1013.25, 0.1903));
-      sum_pressure += current_p;
-
+    for(int i = 0; i < 20; i++) {
+      if (bmp581.performReading()) {
+        float current_p = bmp581.pressure / 100.0; // Convert Pa to hPa
+        sum_pressure += current_p;
+        sum_alt += 44330.0 * (1.0 - pow(current_p / 1013.25, 0.1903));
+      }
       delay(50);
     }
     
@@ -319,7 +326,6 @@ void setup() {
   //========
   if (bno_online){
     bno085.enableReport(SH2_ROTATION_VECTOR);
-    //bno085.enableReport(SH2_ACCELEROMETER);
     bno085.enableReport(SH2_GYROSCOPE_CALIBRATED);
     bno_last_micros = micros();
   }
@@ -518,21 +524,16 @@ void collect_telemetry() {
     //========
 
     if (bmp_online){
-      sensors_event_t temp_event;
-      bmp_temp->getEvent(&temp_event);
-
-      TEMPERATURE = temp_event.temperature;
-
       if (!(SIM_ENABLE && SIM_ACTIVATE)) {
-        sensors_event_t pressure_event;
-        bmp_pressure->getEvent(&pressure_event);
-        raw_hPa = pressure_event.pressure;
-        PRESSURE = raw_hPa/10;
+        if (bmp581.performReading()) {
+          TEMPERATURE = bmp581.temperature;
+          raw_hPa = bmp581.pressure / 100.0; 
+          PRESSURE = raw_hPa / 10.0; 
+        }
+      } 
+      else {
+        raw_hPa = PRESSURE * 10.0;
       }
-      else{
-        raw_hPa = PRESSURE *10.0;
-      }
-
     }
     // Altitude filter
     if (raw_hPa > 0 && ground_pressure > 0) {
@@ -616,7 +617,7 @@ void send_telemetry() {
     PACKET_COUNT += 1;
 
     //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Serial.println(TELEMETRY);
+    //Serial.println(TELEMETRY);
     //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
