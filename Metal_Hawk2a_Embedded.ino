@@ -17,8 +17,8 @@
 // Pins
 //======
 
-#define BNO08X_INT 10
-#define BNO08X_RESET 11
+#define BNO08X_RESET -1
+#define BNO08X_INT   -1
 const int ledpin = LED_BUILTIN;
 const byte scl_one = 27;
 const byte sda_one = 26;
@@ -30,7 +30,7 @@ SerialPIO ground_cam_serial(14, 15); //change pins
 
 const int MMF_ADDR = 0; // The memory "slot" we will use (EEPROM)
 
-const int chipSelect = 22; //SD card
+const int chipSelect = 17; //SD card
 
 //=========
 // Sensors
@@ -39,9 +39,9 @@ Adafruit_BMP5xx bmp581; //Declaring BMP581
 bmp5xx_powermode_t desiredMode = BMP5XX_POWERMODE_NORMAL; // Cache desired power mode
 SFE_UBLOX_GNSS sam_m10q; //Declaring SAM-M10Q
 Adafruit_Sensor *bmp_temp = NULL;
-Adafruit_Sensor *bmp_pressure = NULL; 
+Adafruit_Sensor *bmp_pressure = NULL;
 Adafruit_BNO08x  bno085(BNO08X_RESET);
-sh2_SensorValue_t sensorValue; //bno idk what we use it for
+sh2_SensorValue_t sensorValue;
 Adafruit_INA260 ina260 = Adafruit_INA260();
 
 
@@ -56,12 +56,12 @@ const uint8_t release_s_pin = 2;
 const uint8_t port_s_pin = 1; 
 const uint8_t starboard_s_pin = 0; 
 
-int probe_release = 160; //change
-int probe_engage = 179; //change
-int nose_release = 140; //change
-int nose_engage = 155;
-int egg_release = 115; //change
-int egg_engage = 135;
+int probe_release = 70; //change
+int probe_engage = 140; //Max
+int nose_release = 25; //change
+int nose_engage = 65; //change
+int egg_release = 2; //Min
+int egg_engage = 20; //change
 
 //==================
 // TARGET LOCATIONS
@@ -115,6 +115,13 @@ float ground_pressure = 0;
 float raw_hPa = 0;
 float sum_pressure = 0;
 
+//used for appogee
+unsigned long previousMillis = 0;
+const long interval = 1000;
+
+//used for blink
+unsigned long pMillis = 0;
+
 //============Rudra===========
 // --- Bezier & PID Globals ---
 const int RADIUS = 6371000;
@@ -159,7 +166,6 @@ PIDController steeringPID(400.0, 0.0, 50.0); // Adjust Kp/Kd based on servo resp
 //=======================
 // Required Declarations
 //=======================
-long last_time = 0; //Simple local timer. Limits amount if I2C traffic to u-blox module.
 float lastVelR = 0, lastVelP = 0, lastVelY = 0, last_altitude = 0;
 unsigned long bno_last_micros = 0;
 unsigned long last_telem_time = 0;
@@ -220,36 +226,58 @@ void setup() {
   Wire1.begin();
   Wire1.setClock(100000);
 
+  SPI.setRX(16);
+  SPI.setTX(19);
+  SPI.setSCK(18);
+
   release_s.attach(release_s_pin);
   port_s.attach(port_s_pin);
   starboard_s.attach(starboard_s_pin);
   delay(100);
 
   //===========
-  // BMP & BNO
+  // BMP & SD
   //===========
   ///
   bmp_online = bmp581.begin(0x46, &Wire);
   if (!bmp_online) bmp_online = bmp581.begin(0x47, &Wire);
-  bno_online = false;
   sd_online = SD.begin(chipSelect);
   
-
-  //===========
-  // GPS & INA
-  //===========
+  if (!bmp_online) {
+    Serial.println("BMP is not connected");}
+  if (!sd_online) {
+    Serial.println("SD Card is not connected");}
+  //=================
+  // GPS & INA & BNO
+  //=================
+  
   gps_online = sam_m10q.begin(Wire1, 0x42);
   if (!gps_online) {
     delay(500);
     gps_online = sam_m10q.begin(Wire1, 0x42); // Second attempt
   }
-  ina_online = ina260.begin(0x40, &Wire1);
+  for(int retry = 0; retry < 3; retry++) {
+    ina_online = ina260.begin(0x40, &Wire1);
+    if (ina_online) break;
+    delay(50); 
+  }
+  for(int retry = 0; retry < 3; retry++) {
+    bno_online = bno085.begin_I2C(0x4A, &Wire1, BNO08X_INT);
+    if (bno_online) break;
+    delay(50); 
+  }
+  if (!gps_online) {
+    Serial.println("GPS is not connected");}
+  if (!ina_online) {
+    Serial.println("INA is not connected");}
+  if (!bno_online) {
+    Serial.println("BNO is not connected");}
 
   //==================
   // MID MISSION FLAG
   //==================
   MMF = EEPROM.read(MMF_ADDR);
-  if (MMF == true){                
+  if (MMF == true || MMF == 1){                
     if (sd_online) {                
       File stateFile = SD.open("state.txt", FILE_READ);                
       if (stateFile) {                
@@ -258,16 +286,20 @@ void setup() {
     
         if (savedData.length() > 0) {                
           // Parse "sw_state,ground_pressure,ground_altitude,apogee"
-          int comma1 = savedData.indexOf(',');                
-          int comma2 = savedData.indexOf(',', comma1 + 1);                
-          int comma3 = savedData.indexOf(',', comma2 + 1);                
-      
-          if (comma1 != -1 && comma2 != -1 && comma3 != -1) {                
-            sw_state = savedData.substring(0, comma1);                
-            ground_pressure = savedData.substring(comma1 + 1, comma2).toFloat();                
-            ground_altitude = savedData.substring(comma2 + 1, comma3).toFloat();                
-            apogee = savedData.substring(comma3 + 1).toFloat(); 
-          }                
+          char dataBuf[64];
+          savedData.toCharArray(dataBuf, sizeof(dataBuf));
+          
+          char* token = strtok(dataBuf, ",");
+          if (token != NULL) sw_state = String(token);
+          
+          token = strtok(NULL, ",");
+          if (token != NULL) ground_pressure = atof(token);
+          
+          token = strtok(NULL, ",");
+          if (token != NULL) ground_altitude = atof(token);
+          
+          token = strtok(NULL, ",");
+          if (token != NULL) apogee = atof(token);                
         }                
       }                
     }                
@@ -276,8 +308,9 @@ void setup() {
   //======================================
   // Print to terminal to show connection
   //======================================
-  Serial.println("Intitalizing Metal_Hawk2a");
-
+  Serial.println("Initializing Metal_Hawk2a");
+  digitalWrite(ledpin, HIGH);
+  
   //========
   // BMP581
   //========
@@ -294,7 +327,6 @@ void setup() {
     //bmp581.setOutputDataRate(BMP5XX_ODR_50_HZ);
     //bmp581.setPowerMode(BMP5XX_POWERMODE_NORMAL);
 
-    float sum_alt = 0;
     sum_pressure = 0;
 
     //-----------------
@@ -304,7 +336,6 @@ void setup() {
       if (bmp581.performReading()) {
         float current_p = bmp581.pressure / 100.0; // Convert Pa to hPa
         sum_pressure += current_p;
-        sum_alt += 44330.0 * (1.0 - pow(current_p / 1013.25, 0.1903));
       }
       delay(50);
     }
@@ -325,8 +356,8 @@ void setup() {
   // BNO085
   //========
   if (bno_online){
-    bno085.enableReport(SH2_ROTATION_VECTOR);
-    bno085.enableReport(SH2_GYROSCOPE_CALIBRATED);
+    bno085.enableReport(SH2_ROTATION_VECTOR, 50000);
+    bno085.enableReport(SH2_GYROSCOPE_CALIBRATED, 50000);
     bno_last_micros = micros();
   }
 
@@ -347,7 +378,20 @@ void setup() {
 
 
 void loop() {
+unsigned long currentMillis = millis();
+
+if (currentMillis - pMillis >= interval) {
+  pMillis = currentMillis;
+  int ledState = digitalRead(ledpin);
+  if (ledState == LOW) {
+    digitalWrite(ledpin, HIGH);
+  } else {
+    digitalWrite(ledpin, LOW);
+  }
+}
   collect_telemetry();
+  process_bno_event();
+
   receive_command();
   if (CX == true){
     send_telemetry();
@@ -366,12 +410,21 @@ void loop() {
     if((ALTITUDE < apogee - 5.0 ) && (velocity < -1.0)){
       apogee_counter += 1;
       if(apogee_counter >= 3){
-        sw_state = "DESCENT";
+        sw_state = "APOGEE";
         save_flight_state();
       }
     }
     else {apogee_counter = 0;}
   }
+
+  else if(sw_state == "APOGEE"){
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    sw_state = "DESCENT";
+  }
+
+  }
+
   else if(sw_state == "DESCENT"){
     if(ALTITUDE <= apogee * 0.8 && velocity < -1.0){
       sw_state = "PROBE_RELEASE";
@@ -454,54 +507,6 @@ void collect_telemetry() {
 
   sprintf(MISSION_TIME, "%02d:%02d:%02d", hours, minutes, seconds);
 
-  //========
-  // BNO085
-  //========
-  if (bno_online){
-    if (bno085.getSensorEvent(&sensorValue)){
-      if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
-        unsigned long currentMicros = micros();
-        float dt = (currentMicros - bno_last_micros) / 1000000.0;
-
-        if (dt > 0) {
-          // Get current velocity in deg/s
-          float currVelP = sensorValue.un.gyroscope.x * 57.2958;
-          float currVelR = sensorValue.un.gyroscope.y * 57.2958;
-          float currVelY = sensorValue.un.gyroscope.z * 57.2958;
-
-          // Calculate ACCEL (deg/s^2)
-          ACCEL_P = (currVelP - lastVelP) / dt;
-          ACCEL_R = (currVelR - lastVelR) / dt;
-          ACCEL_Y = (currVelY - lastVelY) / dt;
-
-          // Store current for next calculation
-          lastVelP = currVelP;
-          lastVelR = currVelR;
-          lastVelY = currVelY;
-          bno_last_micros = currentMicros;
-
-          // Update your Telemetry Gyro vars (current velocity)
-          GYRO_P = currVelP;
-          GYRO_R = currVelR;
-          GYRO_Y = currVelY;
-        }
-      }
-      //=========
-      // Heading
-      //=========
-      else if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
-        last_heading = current_heading;
-        float quaternion_w = sensorValue.un.rotationVector.real;
-        float quaternion_x = sensorValue.un.rotationVector.i;
-        float quaternion_y = sensorValue.un.rotationVector.j;
-        float quaternion_z = sensorValue.un.rotationVector.k;
-
-        float yaw = degrees(atan2(2.0*(quaternion_w*quaternion_z + quaternion_x*quaternion_y), 1.0 - 2.0*(quaternion_y*quaternion_y + quaternion_z*quaternion_z)));
-        current_heading = fmod(yaw + 360.0, 360.0);
-      }
-    }
-  }
-
   if (millis() - last_telem_time > 100) {// Waits 0.1 second
     last_telem_time = millis();
 
@@ -571,9 +576,54 @@ void collect_telemetry() {
 
 }
 
+void process_bno_event(){
+  if (bno085.getSensorEvent(&sensorValue)){
+    if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
+      unsigned long currentMicros = micros();
+      float dt = (currentMicros - bno_last_micros) / 1000000.0;
+
+      if (dt > 0) {
+        // Get current velocity in deg/s
+        float currVelP = sensorValue.un.gyroscope.x * 57.2958;
+        float currVelR = sensorValue.un.gyroscope.y * 57.2958;
+        float currVelY = sensorValue.un.gyroscope.z * 57.2958;
+
+        // Calculate ACCEL (deg/s^2)
+        ACCEL_P = (currVelP - lastVelP) / dt;
+        ACCEL_R = (currVelR - lastVelR) / dt;
+        ACCEL_Y = (currVelY - lastVelY) / dt;
+
+        // Store current for next calculation
+        lastVelP = currVelP;
+        lastVelR = currVelR;
+        lastVelY = currVelY;
+        bno_last_micros = currentMicros;
+
+        // Update your Telemetry Gyro vars (current velocity)
+        GYRO_P = currVelP;
+        GYRO_R = currVelR;
+        GYRO_Y = currVelY;
+      }
+    }
+    //=========
+    // Heading
+    //=========
+    else if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+      last_heading = current_heading;
+      float quaternion_w = sensorValue.un.rotationVector.real;
+      float quaternion_x = sensorValue.un.rotationVector.i;
+      float quaternion_y = sensorValue.un.rotationVector.j;
+      float quaternion_z = sensorValue.un.rotationVector.k;
+
+      float yaw = degrees(atan2(2.0*(quaternion_w*quaternion_z + quaternion_x*quaternion_y), 1.0 - 2.0*(quaternion_y*quaternion_y + quaternion_z*quaternion_z)));
+      current_heading = fmod(yaw + 360.0, 360.0);
+    }
+  }
+}
 
 
 
+static unsigned long last_time = 0;
 
 void send_telemetry() {
   if (millis() - last_time > 1000) {// Waits 1 second
@@ -626,8 +676,11 @@ void send_telemetry() {
       if (logFile) {
         logFile.print(TELEMETRY);
         logFile.print('\r');
+        logFile.flush();
         logFile.close();
       }
+    } else {
+      sd_online = sd_online = SD.begin(chipSelect);
     }
   }
 }
@@ -838,6 +891,7 @@ void save_flight_state() {
       stateFile.print(String(ground_pressure) + ",");
       stateFile.print(String(ground_altitude) + ",");
       stateFile.print(String(apogee));
+      stateFile.flush();
       stateFile.close();
       Serial.println("Saved Flight State & Calibration");
     }
