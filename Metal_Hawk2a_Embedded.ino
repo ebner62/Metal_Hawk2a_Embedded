@@ -399,7 +399,7 @@ void loop() {
     else {apogee_counter = 0;}
   }
   else if(sw_state == "APOGEE"){
-    if (currentMillis - previousMillis >= 1) {
+    if (currentMillis - previousMillis >= 1000) {
       previousMillis = currentMillis;
       sw_state = "DESCENT";
     }
@@ -460,7 +460,7 @@ void loop() {
   else if(sw_state == "PAYLOAD_RELEASE"){
     if((abs(velocity) <= 0.2) && (ALTITUDE  < 5.0)){
       sw_state = "LANDED";
-      release_s.write(probe_engage);
+      release_s.write(egg_release);
       save_flight_state();
     }
   }
