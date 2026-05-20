@@ -236,7 +236,7 @@ void setup() {
   if (!bmp_online) bmp_online = bmp581.begin(0x47, &Wire);
   sd_online = SD.begin(chipSelect);
 
-  if !(bmp_online) Serial.println("BMP not online");
+  if (!bmp_online) Serial.println("BMP not online");
   
 
   //=================
@@ -365,6 +365,8 @@ void setup() {
   p2 = {0, 0};
   gate1_m = gps_to_meters(GATE1_LAT_RAD, GATE1_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
   gate2_m = gps_to_meters(GATE2_LAT_RAD, GATE2_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
+
+  digitalWrite(ledpin, HIGH);
 }
 
 
@@ -372,6 +374,7 @@ void loop() {
   collect_telemetry();
   receive_command();
   unsigned long currentMillis = millis();
+  unsigned long previousMillis = 0;
   if (CX == true){
     send_telemetry();
   }
@@ -396,7 +399,7 @@ void loop() {
     else {apogee_counter = 0;}
   }
   else if(sw_state == "APOGEE"){
-    if (currentMillis - previousMillis >= interval) {
+    if (currentMillis - previousMillis >= 1) {
       previousMillis = currentMillis;
       sw_state = "DESCENT";
     }
