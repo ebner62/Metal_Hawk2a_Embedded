@@ -117,7 +117,7 @@ float sum_pressure = 0;
 
 //used for appogee
 unsigned long previousMillis = 0;
-const long interval = 1000;
+const long interval = 100;
 
 //used for blink
 unsigned long pMillis = 0;
@@ -238,7 +238,7 @@ void setup() {
   //===========
   // BMP & SD
   //===========
-  ///
+  
   bmp_online = bmp581.begin(0x46, &Wire);
   if (!bmp_online) bmp_online = bmp581.begin(0x47, &Wire);
   sd_online = SD.begin(chipSelect);
@@ -250,20 +250,28 @@ void setup() {
   //=================
   // GPS & INA & BNO
   //=================
-  
+
+  for(int retry = 0; retry < 3; retry++) {
+    bno_online = bno085.begin_I2C(0x4A, &Wire1, BNO08X_INT);
+    if (bno_online) break;
+    delay(50); 
+  }
+  if (bno_online) {
+    bno085.enableReport(SH2_ROTATION_VECTOR, 50000);
+    bno085.enableReport(SH2_GYROSCOPE_CALIBRATED, 50000);
+    bno_last_micros = micros();
+  }
+  delay(100);
+
+  // THEN GPS and INA
   gps_online = sam_m10q.begin(Wire1, 0x42);
   if (!gps_online) {
     delay(500);
-    gps_online = sam_m10q.begin(Wire1, 0x42); // Second attempt
+    gps_online = sam_m10q.begin(Wire1, 0x42);
   }
   for(int retry = 0; retry < 3; retry++) {
     ina_online = ina260.begin(0x40, &Wire1);
     if (ina_online) break;
-    delay(50); 
-  }
-  for(int retry = 0; retry < 3; retry++) {
-    bno_online = bno085.begin_I2C(0x4A, &Wire1, BNO08X_INT);
-    if (bno_online) break;
     delay(50); 
   }
   if (!gps_online) {
@@ -390,7 +398,6 @@ if (currentMillis - pMillis >= interval) {
   }
 }
   collect_telemetry();
-  process_bno_event();
 
   receive_command();
   if (CX == true){
@@ -507,13 +514,72 @@ void collect_telemetry() {
 
   sprintf(MISSION_TIME, "%02d:%02d:%02d", hours, minutes, seconds);
 
+  //=====
+  // BNO
+  //=====
+
+  static unsigned long last_bno_event = 0;
+
+  if (bno_online && last_bno_event != 0 && (millis() - last_bno_event > 2000)) {
+    delay(100);
+    Wire1.beginTransmission(0x4A);
+    Wire1.write(0x01);  // reset command
+    Wire1.endTransmission();;   // ← add this
+    delay(500);
+    bno_online = false;
+    for (int retry = 0; retry < 3; retry++) {
+      bno_online = bno085.begin_I2C(0x4A, &Wire1, BNO08X_INT);
+      if (bno_online) break;
+      delay(50);
+    }
+    if (bno_online) {
+      bno085.enableReport(SH2_ROTATION_VECTOR, 50000);
+      bno085.enableReport(SH2_GYROSCOPE_CALIBRATED, 50000);
+      bno_last_micros = micros();
+      last_bno_event = millis(); // reset watchdog
+      Serial.println("BNO recovered OK");
+    } else {
+      Serial.println("BNO recovery FAILED");
+    }
+    return;
+  }
+
+  if (bno085.getSensorEvent(&sensorValue)) {
+    last_bno_event = millis();
+
+    if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
+      unsigned long currentMicros = micros();
+      float dt = (currentMicros - bno_last_micros) / 1000000.0;
+      if (dt > 0) {
+        float currVelP = sensorValue.un.gyroscope.x * 57.2958;
+        float currVelR = sensorValue.un.gyroscope.y * 57.2958;
+        float currVelY = sensorValue.un.gyroscope.z * 57.2958;
+        ACCEL_P = (currVelP - lastVelP) / dt;
+        ACCEL_R = (currVelR - lastVelR) / dt;
+        ACCEL_Y = (currVelY - lastVelY) / dt;
+        lastVelP = currVelP; lastVelR = currVelR; lastVelY = currVelY;
+        bno_last_micros = currentMicros;
+        GYRO_P = currVelP; GYRO_R = currVelR; GYRO_Y = currVelY;
+      }
+    }
+    else if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+      last_heading = current_heading;
+      float qw = sensorValue.un.rotationVector.real;
+      float qx = sensorValue.un.rotationVector.i;
+      float qy = sensorValue.un.rotationVector.j;
+      float qz = sensorValue.un.rotationVector.k;
+      float yaw = degrees(atan2(2.0*(qw*qz + qx*qy), 1.0 - 2.0*(qy*qy + qz*qz)));
+      current_heading = fmod(yaw + 360.0, 360.0);
+    }
+  }
+
   if (millis() - last_telem_time > 100) {// Waits 0.1 second
     last_telem_time = millis();
 
     //==========
     // SAM-M10Q
     //==========
-    if (gps_online && sam_m10q.getPVT()){
+    if (gps_online && sam_m10q.getPVT(0)){
       GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
       GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
       GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
@@ -576,59 +642,13 @@ void collect_telemetry() {
 
 }
 
-void process_bno_event(){
-  if (bno085.getSensorEvent(&sensorValue)){
-    if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
-      unsigned long currentMicros = micros();
-      float dt = (currentMicros - bno_last_micros) / 1000000.0;
-
-      if (dt > 0) {
-        // Get current velocity in deg/s
-        float currVelP = sensorValue.un.gyroscope.x * 57.2958;
-        float currVelR = sensorValue.un.gyroscope.y * 57.2958;
-        float currVelY = sensorValue.un.gyroscope.z * 57.2958;
-
-        // Calculate ACCEL (deg/s^2)
-        ACCEL_P = (currVelP - lastVelP) / dt;
-        ACCEL_R = (currVelR - lastVelR) / dt;
-        ACCEL_Y = (currVelY - lastVelY) / dt;
-
-        // Store current for next calculation
-        lastVelP = currVelP;
-        lastVelR = currVelR;
-        lastVelY = currVelY;
-        bno_last_micros = currentMicros;
-
-        // Update your Telemetry Gyro vars (current velocity)
-        GYRO_P = currVelP;
-        GYRO_R = currVelR;
-        GYRO_Y = currVelY;
-      }
-    }
-    //=========
-    // Heading
-    //=========
-    else if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
-      last_heading = current_heading;
-      float quaternion_w = sensorValue.un.rotationVector.real;
-      float quaternion_x = sensorValue.un.rotationVector.i;
-      float quaternion_y = sensorValue.un.rotationVector.j;
-      float quaternion_z = sensorValue.un.rotationVector.k;
-
-      float yaw = degrees(atan2(2.0*(quaternion_w*quaternion_z + quaternion_x*quaternion_y), 1.0 - 2.0*(quaternion_y*quaternion_y + quaternion_z*quaternion_z)));
-      current_heading = fmod(yaw + 360.0, 360.0);
-    }
-  }
-}
-
-
 
 static unsigned long last_time = 0;
 
 void send_telemetry() {
   if (millis() - last_time > 1000) {// Waits 1 second
     last_time = millis();
-    char tel_buffer[800]; //I need to change buffer amount
+    char tel_buffer[1024]; //I need to change buffer amount
 
     //Telemetry string========================================================
     sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s,,%.1f,%.1f,%.1f", 
@@ -686,7 +706,7 @@ void send_telemetry() {
 }
 
 void receive_command(){
-  if (Serial1.available() > 0) {
+  while (Serial1.available() > 0) {
     char c = Serial1.read();
 
     if (c == '\n'){
@@ -782,7 +802,7 @@ void handleCommand(char* message){
       /* SIMP */
       /*======*/
       else if (type != NULL && strcmp(type, "SIMP") == 0) {
-        if (SIM_ENABLE && SIM_ACTIVATE) {
+        if (state != NULL && SIM_ENABLE && SIM_ACTIVATE) {
           PRESSURE = atof(state) / 1000.0;
           raw_hPa = PRESSURE * 10.0;
           if (ground_pressure == 0){
