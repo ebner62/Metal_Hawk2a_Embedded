@@ -372,9 +372,8 @@ void setup() {
 
 void loop() {
   collect_telemetry();
-  receive_command();
-  unsigned long currentMillis = millis();
   unsigned long previousMillis = 0;
+  receive_command();
   if (CX == true){
     send_telemetry();
   }
@@ -399,7 +398,8 @@ void loop() {
     else {apogee_counter = 0;}
   }
   else if(sw_state == "APOGEE"){
-    if (currentMillis - previousMillis >= 1000) {
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= 2000) {
       previousMillis = currentMillis;
       sw_state = "DESCENT";
     }
