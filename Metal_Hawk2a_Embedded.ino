@@ -11,6 +11,7 @@
 #include <Servo.h> // Servos ofc
 #include <math.h> // for steering
 #include <cmath> 
+#include "Navigation.h" 
 
 //======
 // Pins
@@ -62,17 +63,26 @@ int nose_engage = 65; //change
 int egg_release = 2; //Min
 int egg_engage = 20; //change
 
-//==================
+//=========================
 // TARGET LOCATIONS
-//==================
-const double target_lat_one = 00.000; // FILL IN LATER
-const double target_lon_one = 00.000; // FILL IN LATER
-bool target_one_reached = false;
+//=========================
+const double TARGET_LAT_RAD = dmsToRadians(38, 22, 33.54); // Get these from google earth
+const double TARGET_LON_RAD = -dmsToRadians(79, 36, 28.3);
+const double GATE1_LAT_RAD = dmsToRadians(38, 22, 32.78); // Intermediate point
+const double GATE1_LON_RAD = -dmsToRadians(79, 36, 26.36); 
+const double GATE2_LAT_RAD = dmsToRadians(38, 22, 34.28); // Intermediate point 
+const double GATE2_LON_RAD = -dmsToRadians(79, 36, 30.11); 
 
-const double target_lat_two = 00.000; // FILL IN LATER
-const double target_lon_two = 00.000; // FILL IN LATER
-bool target_two_reached = false;
+//========================
+// Navigation Globals
+//========================
+const float MAGNETIC_DECLINATION = -8.5; // 8.5 degrees West for Monterey, VA
+bool curve_generated = false;
+Point2D p0, p1, p2;
+Point2D gate1_m, gate2_m;
 
+// Initialize the PID Controller (Kp, Ki, Kd) - Tune these values later!
+PIDController steeringPID(45.0, 0.0, 10.0);
 
 
 //========================
@@ -101,8 +111,12 @@ double VECTOR_PRODUCT = 0.0;
 float velocity = 0;
 float apogee = 0;
 float release;
+unsigned long flare = 0;
+const int flare_duration = 2000;
+const int start_brake_angle = 20;
+const int max_brake_angle = 135;
 
-bool nose_fired = false, probe_fired = false, egg_fired = false;
+bool nose_fired = false, probe_fired = false, egg_fired = false, flare_start_time = false;
 
 bool gps_online = false, bmp_online = false, ina_online = false, bno_online = false, sd_online = false;
 
@@ -113,47 +127,6 @@ float ground_altitude = 0;
 float ground_pressure = 0;
 float raw_hPa = 0;
 float sum_pressure = 0;
-
-//============Rudra===========
-// --- Bezier & PID Globals ---
-const int RADIUS = 6371000;
-struct Point2D { double x; double y; };
-
-// Target/Gate Coordinates (Radians) - Calculated once in setup
-double TARGET_LAT_RAD, TARGET_LON_RAD;
-double GATE1_LAT_RAD, GATE1_LON_RAD, GATE2_LAT_RAD, GATE2_LON_RAD;
-
-// Navigation Points in Meters
-Point2D p0, p1, p2; 
-Point2D gate1_m, gate2_m;
-bool curve_generated = false;
-
-struct PIDController {
-    double Kp, Ki, Kd;
-    double integral_sum = 0, last_error = 0, last_derivative = 0;
-    unsigned long last_time = 0;
-    double filter_alpha = 0.5;
-
-    PIDController(double p, double i, double d) : Kp(p), Ki(i), Kd(d) {}
-
-    double compute(double error) {
-        if (std::abs(error) < 0.05) error = 0;
-        unsigned long now = millis();
-        if (last_time == 0) { last_time = now; last_error = error; return 0; }
-        double dt = (now - last_time) / 1000.0;
-        if (dt <= 0) return 0;
-
-        integral_sum = constrain(integral_sum + (error * dt), -1.0, 1.0);
-        double raw_der = (error - last_error) / dt;
-        double filtered_der = (filter_alpha * raw_der) + ((1 - filter_alpha) * last_derivative);
-        
-        last_error = error; last_time = now; last_derivative = filtered_der;
-        return (Kp * error) + (Ki * integral_sum) + (Kd * filtered_der);
-    }
-};
-
-PIDController steeringPID(400.0, 0.0, 50.0); // Adjust Kp/Kd based on servo response
-//============================
 
 //=======================
 // Required Declarations
@@ -366,23 +339,14 @@ void setup() {
     ///
   }
 
-  //====================================================================Rudra===============
-  // Initialize competition coordinates
-  TARGET_LAT_RAD = dmsToRadians(31, 7, 20.9);
-  TARGET_LON_RAD = -dmsToRadians(86, 5, 33.02);
-  GATE1_LAT_RAD = dmsToRadians(31, 7, 21.05);
-  GATE1_LON_RAD = -dmsToRadians(86, 5, 29.28);
-  GATE2_LAT_RAD = dmsToRadians(31, 7, 20.86);
-  GATE2_LON_RAD = -dmsToRadians(86, 5, 36.82);
-
-  // Set p2 (Target) as the origin (0,0)
-  p2 = {0, 0};
-  gate1_m = gps_to_meters(GATE1_LAT_RAD, GATE1_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
-  gate2_m = gps_to_meters(GATE2_LAT_RAD, GATE2_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
-
   digitalWrite(release_cam, HIGH);
   digitalWrite(ground_cam, HIGH);
   digitalWrite(ledpin, HIGH);
+
+  // Add this near the bottom of your setup() function
+  gate1_m = gps_to_meters(GATE1_LAT_RAD, GATE1_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
+  gate2_m = gps_to_meters(GATE2_LAT_RAD, GATE2_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
+  p2 = gps_to_meters(TARGET_LAT_RAD, TARGET_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD); // This will just be (0,0)
 }
 
 
@@ -398,8 +362,11 @@ void loop() {
     if(ALTITUDE >= 20 && velocity >=10){
       sw_state = "ASCENT";
       save_flight_state();
+      digitalWrite(ground_cam, LOW);
+      digitalWrite(release_cam, LOW);
     }
   }
+
   else if(sw_state == "ASCENT"){
     if(ALTITUDE > apogee){
       apogee = ALTITUDE;
@@ -413,15 +380,15 @@ void loop() {
     }
     else {apogee_counter = 0;}
   }
+
   else if(sw_state == "APOGEE"){
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= 2000) {
       previousMillis = currentMillis;
       sw_state = "DESCENT";
-      digitalWrite(ground_cam, LOW);
-      digitalWrite(release_cam, LOW);
     }
   }
+
   else if(sw_state == "DESCENT"){
     if(ALTITUDE <= apogee * 0.8 && velocity < -1.0){
       sw_state = "PROBE_RELEASE";
@@ -430,18 +397,29 @@ void loop() {
       save_flight_state();
     }
   }
+
   else if(sw_state == "PROBE_RELEASE"){
 
+    // Nose Release
     if (ALTITUDE <= (apogee * 0.7) && !nose_fired) {
       release_s.write(nose_release);
       nose_fired = true;
     }
-    if(ALTITUDE <= 2.0){
+    
+    // Breaking
+    else if (ALTITUDE <= 5.0){
+      break_flare();
+    }
+
+    // Egg release
+    else if (ALTITUDE <= 2.0){
       sw_state = "PAYLOAD_RELEASE";
       release_s.write(egg_release);
       egg_fired = true;
       save_flight_state();
     }
+
+    // Curve generator
     if (!curve_generated && gps_online) {
       p0 = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
       
@@ -456,6 +434,8 @@ void loop() {
     // 2. Active Steering Logic
     if (curve_generated) {
       Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
+
+      check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
       double heading_rad = current_heading * (M_PI / 180.0);
       
       // Get error and compute PID correction
@@ -475,6 +455,7 @@ void loop() {
       STRB_ANGLE = s_out;
     }
   }
+
   else if(sw_state == "PAYLOAD_RELEASE"){
     if((abs(velocity) <= 0.2) && (ALTITUDE  < 5.0)){
       sw_state = "LANDED";
@@ -482,6 +463,7 @@ void loop() {
       save_flight_state();
     }
   }
+
   else if(sw_state == "LANDED"){
     digitalWrite(ledpin, (millis() / 500) % 2);
     digitalWrite(release_cam, HIGH);
@@ -541,6 +523,8 @@ void collect_telemetry() {
       float yaw = atan2(2.0f * (qr * qk + qi * qj),
                         1.0f - 2.0f * (qj * qj + qk * qk));
       float heading = yaw * RAD_TO_DEG;
+      heading += MAGNETIC_DECLINATION;
+
       if (heading < 0) heading += 360.0f;
 
       last_heading    = current_heading;
@@ -672,9 +656,9 @@ void send_telemetry() {
     Serial1.print('\r');
     PACKET_COUNT += 1;
 
-    //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Serial.println(TELEMETRY);
-    //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ///REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ///Serial.println(TELEMETRY);
+    ///REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
     if (sd_online) {
@@ -884,6 +868,19 @@ void handleCommand(char* message){
   }
 }
 
+void break_flare() {
+  if (!flare){
+    flare_start_time = millis();
+    flare = true;
+  }
+
+  unsigned long elapsed = millis() - flare_start_time;
+  float progress = constrain((float)elapsed / (float)flare_duration, 0.0, 1.0);
+  int current_flare_angle = start_brake_angle + (progress * (max_brake_angle - start_brake_angle));
+  port_s.write(current_flare_angle);
+  starboard_s.write(current_flare_angle);
+}
+
 void save_flight_state() {
   if (sd_online) {
     SD.remove("state.txt");
@@ -900,48 +897,3 @@ void save_flight_state() {
   }
 }
 
-//============================================================Rudra======================
-
-Point2D gps_to_meters(double lat_rad, double lon_rad, double ref_lat, double ref_lon) { 
-    Point2D pos;
-    pos.y = (lat_rad - ref_lat) * RADIUS;
-    pos.x = (lon_rad - ref_lon) * RADIUS * std::cos((ref_lat + lat_rad) / 2.0);
-    return pos;
-}
-
-Point2D quadBezier(double t, Point2D p0, Point2D p1, Point2D p2) {
-    double u = 1.0 - t;
-    Point2D p;
-    p.x = (u * u) * p0.x + 2 * u * t * p1.x + (t * t) * p2.x;
-    p.y = (u * u) * p0.y + 2 * u * t * p1.y + (t * t) * p2.y;
-    return p;
-}
-
-Point2D get_active_target(Point2D current_pos, Point2D p0, Point2D p1, Point2D p2) {
-    double closest_t = 0, min_dist = 999999; 
-    for (double t = 0; t <= 1.0; t += 0.05) {
-        Point2D curve_pt = quadBezier(t, p0, p1, p2);
-        double d = std::sqrt(pow(curve_pt.x - current_pos.x, 2) + pow(curve_pt.y - current_pos.y, 2));
-        if (d < min_dist) { min_dist = d; closest_t = t; }
-    }
-    return quadBezier(std::min(closest_t + 0.10, 1.0), p0, p1, p2);
-}
-
-double calculate_steering_error(Point2D current_pos, double heading_rad, Point2D p0, Point2D p1, Point2D p2) {
-    Point2D target = get_active_target(current_pos, p0, p1, p2);
-    double Tx = target.x - current_pos.x, Ty = target.y - current_pos.y;
-    double mag = sqrt(Tx*Tx + Ty*Ty);
-    if (mag > 0) { Tx /= mag; Ty /= mag; }
-    
-    double Hx = sin(heading_rad), Hy = cos(heading_rad);
-    double cross = (Hx * Ty) - (Hy * Tx);
-    double dot = (Hx * Tx) + (Hy * Ty);
-    
-    if (dot < 0) return (cross > 0) ? 1.0 : -1.0; // Target behind, hard turn
-    return cross;
-}
-
-double dmsToRadians(double degrees, double minutes, double seconds) {
-    double decimalDegrees = degrees + (minutes / 60.0) + (seconds / 3600.0);
-    return decimalDegrees * (M_PI / 180.0);
-}

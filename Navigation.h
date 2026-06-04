@@ -17,15 +17,6 @@ inline double dmsToRadians(float d, float m, float s) {
     return decimalDegrees * (M_PI/180.0);
 }
 
-
-// Move these constants to the main embedded file so we can just change these points over there easily depending if its test launch 1, 2, or the comp launch.
-const double TARGET_LAT_RAD = dmsToRadians(31, 07, 20.9); // Get these from google earth
-const double TARGET_LON_RAD = -dmsToRadians(86, 05, 33.02);
-const double GATE1_LAT_RAD = dmsToRadians(31, 07, 21.05); // Intermediate point
-const double GATE1_LON_RAD = -dmsToRadians(86, 05, 29.28); 
-const double GATE2_LAT_RAD = dmsToRadians(31, 07, 20.86); // Intermediate point 
-const double GATE2_LON_RAD = -dmsToRadians(86, 05, 36.82); 
-
 // --- NAVIGATION FUNCTIONS ---
 
 // Input lat_rad and lon_rad from the main file, outputs a struct which lets us define the points p0, p1, and p2. (p2 WILL ALWAYS REMAIN THE SAME)
