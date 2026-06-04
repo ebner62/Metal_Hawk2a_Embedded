@@ -6,11 +6,10 @@
 #include <Adafruit_Sensor.h> //BMP581
 #include "Adafruit_BMP5xx.h" //BMP581
 #include <Adafruit_INA260.h> //INA260
-#include <SparkFun_u-blox_GNSS_v3.h> // SAM-M10Q
+#include <SparkFun_u-blox_GNSS_v3.h> // SAM-M8Q
 #include <Adafruit_BNO08x.h>  // BNO085
 #include <Servo.h> // Servos ofc
 #include <math.h> // for steering
-#include <SerialPIO.h> // creates uarts
 #include <cmath> 
 
 //======
@@ -23,7 +22,8 @@ const byte scl_one = 27;
 const byte sda_one = 26;
 const byte scl_zero = 9;
 const byte sda_zero = 8;
-SerialPIO ground_cam_serial(14, 15); //change pins
+const int ground_cam = 22;
+const int release_cam = 14;
 
 //****************************************//
 
@@ -36,7 +36,7 @@ const int chipSelect = 17; //SD card
 //=========
 Adafruit_BMP5xx bmp581; //Declaring BMP581
 bmp5xx_powermode_t desiredMode = BMP5XX_POWERMODE_NORMAL; // Cache desired power mode
-SFE_UBLOX_GNSS sam_m10q; //Declaring SAM-M10Q
+SFE_UBLOX_GNSS sam_m8q; //Declaring SAM-M8Q
 Adafruit_Sensor *bmp_temp = NULL;
 Adafruit_Sensor *bmp_pressure = NULL; 
 Adafruit_BNO08x  bno085;                                     // Declaring BNO085 (I2C, no INT/RESET pins)
@@ -158,7 +158,7 @@ PIDController steeringPID(400.0, 0.0, 50.0); // Adjust Kp/Kd based on servo resp
 //=======================
 // Required Declarations
 //=======================
-long last_time = 0; //Simple local timer. Limits amount if I2C traffic to u-blox module.
+unsigned long last_time = 0; //Simple local timer. Limits amount if I2C traffic to u-blox module.
 float lastVelR = 0, lastVelP = 0, lastVelY = 0, last_altitude = 0;
 unsigned long bno_last_micros = 0;
 unsigned long last_telem_time = 0;
@@ -183,13 +183,6 @@ bool SIM_ENABLE = false;
 bool SIM_ACTIVATE = false;
 bool MMF = false;
 
-//=========
-// Cameras
-//=========
-
-uint8_t cmd_ShortPress[] = {0xCC, 0x01, 0x01, 0xD9}; // Start/Stop Record
-uint8_t cmd_LongPress[]  = {0xCC, 0x01, 0x02, 0x72}; // Power On/Off Toggle
-
 void setup() {
   Serial.begin(9600);
   delay(500);
@@ -197,16 +190,19 @@ void setup() {
   unsigned long start = millis();
   while (!Serial && (millis() - start < 3000));
   
+  pinMode(ground_cam, OUTPUT);
+  pinMode(release_cam, OUTPUT);
+  digitalWrite(release_cam, HIGH);
+  digitalWrite(ground_cam, HIGH);
+
+
   Serial1.setTX(12);
   Serial1.setRX(13);
-  Serial1.begin(9600);
-  pinMode(ledpin, OUTPUT);
-  
-  ground_cam_serial.begin(115200);
+  Serial1.begin(115200);
 
-  Serial2.setTX(4);
-  Serial2.setRX(5);
-  Serial2.begin(115200); //Release mech cam
+  pinMode(ledpin, OUTPUT);
+
+  delay(1000);
 
   Wire.setSDA(sda_zero);
   Wire.setSCL(scl_zero);
@@ -218,6 +214,7 @@ void setup() {
   Wire1.setSCL(scl_one);
   Wire1.begin();
   Wire1.setClock(100000);
+  delay(100);
 
   SPI.setRX(16);
   SPI.setTX(19);
@@ -237,17 +234,32 @@ void setup() {
   sd_online = SD.begin(chipSelect);
 
   if (!bmp_online) Serial.println("BMP not online");
-  
+  if (!sd_online) Serial.println ("SD not online");
 
   //=================
-  // GPS & INA & BNO
+  // INA & BNO & GPS
   //=================
-  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1);
-  gps_online = sam_m10q.begin(Wire1, 0x42);
+  sam_m8q.begin(Wire1, 0x42);  
+  gps_online = true;
   if (!gps_online) {
     delay(500);
-    gps_online = sam_m10q.begin(Wire1, 0x42); // Second attempt
+    gps_online = sam_m8q.begin(Wire1, 0x42); // Second attempt
   }
+
+  ///
+  /// temp
+  ///
+  Wire1.beginTransmission(0x42);
+  byte gps_error = Wire1.endTransmission();
+  Serial.print("GPS I2C ping: ");
+  Serial.println(gps_error == 0 ? "ALIVE" : "DEAD");
+  Serial.print("GPS begin() returned: ");
+  Serial.println(gps_online ? "true" : "false");
+  ///
+  ///
+  ///
+  delay(200);
+  bno_online = bno085.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire1);
   ina_online = ina260.begin(0x40, &Wire1);
   if (bno_online) {
     // Enable Rotation Vector (fused heading) and Gyroscope reports
@@ -334,8 +346,10 @@ void setup() {
   // GPS
   //=====
   if (gps_online){
-    sam_m10q.setI2COutput(COM_TYPE_UBX);
-    sam_m10q.saveConfigSelective(VAL_CFG_SUBSEC_IOPORT);
+    sam_m8q.setNavigationFrequency(5);
+    sam_m8q.setAutoPVT(true);
+    sam_m8q.setI2COutput(COM_TYPE_UBX);
+    sam_m8q.saveConfigSelective(VAL_CFG_SUBSEC_IOPORT);
   }
 
   //========
@@ -366,6 +380,8 @@ void setup() {
   gate1_m = gps_to_meters(GATE1_LAT_RAD, GATE1_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
   gate2_m = gps_to_meters(GATE2_LAT_RAD, GATE2_LON_RAD, TARGET_LAT_RAD, TARGET_LON_RAD);
 
+  digitalWrite(release_cam, HIGH);
+  digitalWrite(ground_cam, HIGH);
   digitalWrite(ledpin, HIGH);
 }
 
@@ -402,6 +418,8 @@ void loop() {
     if (currentMillis - previousMillis >= 2000) {
       previousMillis = currentMillis;
       sw_state = "DESCENT";
+      digitalWrite(ground_cam, LOW);
+      digitalWrite(release_cam, LOW);
     }
   }
   else if(sw_state == "DESCENT"){
@@ -466,9 +484,8 @@ void loop() {
   }
   else if(sw_state == "LANDED"){
     digitalWrite(ledpin, (millis() / 500) % 2);
-    if ((millis() / 1000) % 2 == 0) {
-        
-    }
+    digitalWrite(release_cam, HIGH);
+    digitalWrite(ground_cam, HIGH);
   }
 }
 
@@ -536,19 +553,28 @@ void collect_telemetry() {
     last_telem_time = millis();
 
     //==========
-    // SAM-M10Q
+    // SAM-M8Q
     //==========
-    if (gps_online && sam_m10q.getPVT()){
-      GPS_LATITUDE = sam_m10q.getLatitude() / 10000000.0;
-      GPS_LONGITUDE = sam_m10q.getLongitude() / 10000000.0;
-      GPS_ALTITUDE = sam_m10q.getAltitudeMSL() / 1000.0;
-      GPS_SATS = sam_m10q.getSIV();
-      sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m10q.getHour(), sam_m10q.getMinute(), sam_m10q.getSecond());
+    if (gps_online && sam_m8q.getPVT(250)){
+      GPS_LATITUDE = sam_m8q.getLatitude() / 10000000.0;
+      GPS_LONGITUDE = sam_m8q.getLongitude() / 10000000.0;
+      GPS_ALTITUDE = sam_m8q.getAltitude() / 1000.0;
+      GPS_SATS = sam_m8q.getSIV();
+      sprintf(GPS_TIME, "%02d:%02d:%02d", sam_m8q.getHour(), sam_m8q.getMinute(), sam_m8q.getSecond());
 
       lat_rad = (GPS_LATITUDE * M_PI) / 180.0;
       lon_rad = (GPS_LONGITUDE * M_PI) / 180.0;
+    } 
+    ///
+    ///
+    ///
+    else { 
+      Serial.print("GPS poll failed. gps_online=");
+      Serial.println(gps_online);      
     }
-
+    ///
+    ///
+    
     //========
     // BMP581
     //========
@@ -647,7 +673,7 @@ void send_telemetry() {
     PACKET_COUNT += 1;
 
     //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    //Serial.println(TELEMETRY);
+    Serial.println(TELEMETRY);
     //REMOVE~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
@@ -663,7 +689,7 @@ void send_telemetry() {
 }
 
 void receive_command(){
-  if (Serial1.available() > 0) {
+  while (Serial1.available() > 0) {
     char c = Serial1.read();
 
     if (c == '\n'){
@@ -728,7 +754,7 @@ void handleCommand(char* message){
       /*====*/
       else if (type != NULL && strcmp(type, "ST") == 0) {
         if (state != NULL && strcmp(state, "GPS") == 0) {
-          uint32_t gps_total_seconds = (sam_m10q.getHour() * 3600UL) + (sam_m10q.getMinute() * 60UL) + sam_m10q.getSecond();
+          uint32_t gps_total_seconds = (sam_m8q.getHour() * 3600UL) + (sam_m8q.getMinute() * 60UL) + sam_m8q.getSecond();
           time_offset = gps_total_seconds - (millis() / 1000);
         }
       
@@ -837,10 +863,10 @@ void handleCommand(char* message){
       /*======*/
       else if ((type != NULL && strcmp(type, "GCAM") == 0)) {
         if (state != NULL && strcmp(state, "ON") == 0) {
-          power_g_cam();
+          digitalWrite(ground_cam, LOW);
         }
-        else if (state != NULL && strcmp(state, "RECORD") == 0){
-          record_g_cam(true);
+        else if (state != NULL && strcmp(state, "OFF") == 0){
+          digitalWrite(ground_cam, HIGH);
         }
       }
       /*======*/
@@ -848,10 +874,10 @@ void handleCommand(char* message){
       /*======*/
       else if ((type != NULL && strcmp(type, "DCAM") == 0)) {
         if (state != NULL && strcmp(state, "ON") == 0) {
-          power_d_cam();
+          digitalWrite(release_cam, LOW);
         }
-        else if (state != NULL && strcmp(state, "RECORD") == 0) {
-          record_d_cam(true);
+        else if (state != NULL && strcmp(state, "OFF") == 0) {
+          digitalWrite(release_cam, HIGH);
         }
       }
     }  
@@ -872,22 +898,6 @@ void save_flight_state() {
       Serial.println("Saved Flight State & Calibration");
     }
   }
-}
-
-void record_d_cam(bool start) { //Deployment
-  Serial2.write(cmd_ShortPress, sizeof(cmd_ShortPress));
-}
-
-void record_g_cam(bool start) { //Ground
-  ground_cam_serial.write(cmd_ShortPress, sizeof(cmd_ShortPress));
-}
-
-void power_d_cam() {
-  Serial2.write(cmd_LongPress, sizeof(cmd_LongPress));
-}
-
-void power_g_cam() {
-  ground_cam_serial.write(cmd_LongPress, sizeof(cmd_LongPress));
 }
 
 //============================================================Rudra======================
