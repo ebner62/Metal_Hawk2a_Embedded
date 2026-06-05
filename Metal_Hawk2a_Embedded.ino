@@ -127,6 +127,8 @@ float raw_hPa = 0;
 float sum_pressure = 0;
 unsigned long previousMillis = 0;
 
+int cam_loop_count = 0;
+
 //=======================
 // Required Declarations
 //=======================
@@ -351,7 +353,6 @@ void setup() {
 
 void loop() {
   collect_telemetry();
-  
   receive_command();
   if (CX == true){
     send_telemetry();
@@ -361,8 +362,6 @@ void loop() {
     if(ALTITUDE >= 20 && velocity >=10){
       sw_state = "ASCENT";
       save_flight_state();
-      digitalWrite(ground_cam, LOW);
-      digitalWrite(release_cam, LOW);
     }
   }
 
@@ -374,6 +373,16 @@ void loop() {
       apogee_counter += 1;
       if(apogee_counter >= 3){
         sw_state = "APOGEE";
+
+
+      if (cam_loop_count = 0){
+        digitalWrite(ground_cam, LOW);
+      }
+      if (cam_loop_count = 20){
+      digitalWrite(release_cam, LOW);
+      }
+      cam_loop_count += 1;
+
         save_flight_state();
       }
     }
