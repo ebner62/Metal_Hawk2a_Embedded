@@ -101,8 +101,6 @@ char GPS_TIME[15]; // Done
 double GPS_ALTITUDE, GPS_LATITUDE, GPS_LONGITUDE; // Done
 int GPS_SATS; // Done
 char ECHO[128]; // Done
-double STRB_ANGLE = 0.0;
-double PORT_ANGLE = 0.0;
 double VECTOR_PRODUCT = 0.0;
 
 //================================
@@ -451,8 +449,6 @@ void loop() {
 
       // Update telemetry variables
       VECTOR_PRODUCT = error;
-      PORT_ANGLE = p_out;
-      STRB_ANGLE = s_out;
     }
   }
 
@@ -621,7 +617,7 @@ void send_telemetry() {
     char tel_buffer[800]; //I need to change buffer amount
 
     //Telemetry string========================================================
-    sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s,,%.1f,%.1f,%.1f", 
+    sprintf(tel_buffer, "%d,%s,%d,%c,%s,%.1f,%.1f,%.1f,%.1f,%.2f,%f,%f,%f,%f,%f,%f,%s,%.1f,%.4f,%.4f,%d,%s", 
             TEAM_ID, 
             MISSION_TIME, 
             PACKET_COUNT, 
@@ -643,10 +639,7 @@ void send_telemetry() {
             GPS_LATITUDE,
             GPS_LONGITUDE,
             GPS_SATS,
-            ECHO,
-            STRB_ANGLE,
-            PORT_ANGLE,
-            VECTOR_PRODUCT
+            ECHO
             );
 
     //========================================================================
