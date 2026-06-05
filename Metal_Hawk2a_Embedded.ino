@@ -99,7 +99,7 @@ float GYRO_R, GYRO_P, GYRO_Y;
 float ACCEL_R, ACCEL_P, ACCEL_Y; // Done
 char GPS_TIME[15]; // Done
 double GPS_ALTITUDE, GPS_LATITUDE, GPS_LONGITUDE; // Done
-int GPS_SATS; // Done
+int GPS_SATS; // Donee
 char ECHO[128]; // Done
 double VECTOR_PRODUCT = 0.0;
 
@@ -109,12 +109,12 @@ double VECTOR_PRODUCT = 0.0;
 float velocity = 0;
 float apogee = 0;
 float release;
-unsigned long flare = 0;
+unsigned long flare_start_time = 0;
 const int flare_duration = 2000;
 const int start_brake_angle = 20;
 const int max_brake_angle = 135;
 
-bool nose_fired = false, probe_fired = false, egg_fired = false, flare_start_time = false;
+bool nose_fired = false, probe_fired = false, egg_fired = false, flare = false;
 
 bool gps_online = false, bmp_online = false, ina_online = false, bno_online = false, sd_online = false;
 
@@ -125,6 +125,7 @@ float ground_altitude = 0;
 float ground_pressure = 0;
 float raw_hPa = 0;
 float sum_pressure = 0;
+unsigned long previousMillis = 0;
 
 //=======================
 // Required Declarations
@@ -350,7 +351,7 @@ void setup() {
 
 void loop() {
   collect_telemetry();
-  unsigned long previousMillis = 0;
+  
   receive_command();
   if (CX == true){
     send_telemetry();
@@ -381,7 +382,7 @@ void loop() {
 
   else if(sw_state == "APOGEE"){
     unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= 2000) {
+    if (currentMillis - previousMillis >= 1500) {
       previousMillis = currentMillis;
       sw_state = "DESCENT";
     }
@@ -576,7 +577,7 @@ void collect_telemetry() {
       float current_rel_alt = 44330.0 * (pow(ground_pressure / raw_hPa, 0.1903) - 1.0);
 
       if (!isnan(current_rel_alt) && !isinf(current_rel_alt)){
-        ALTITUDE = (ALTITUDE * 0.7) + (current_rel_alt * 0.3);
+        ALTITUDE = (ALTITUDE * 0.5) + (current_rel_alt * 0.5);
       }
     }
 
@@ -598,7 +599,7 @@ void collect_telemetry() {
       float instant_velocity = (ALTITUDE - last_altitude) / dt_vel;
 
       if(!isnan(instant_velocity) && !isinf(instant_velocity)) {
-        velocity = (velocity * 0.8) + (instant_velocity * 0.2);
+        velocity = (velocity * 0.5) + (instant_velocity * 0.5);
         last_altitude = ALTITUDE;
         last_vel_time = current_vel_millis;
       }
