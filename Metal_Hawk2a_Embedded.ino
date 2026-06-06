@@ -429,7 +429,7 @@ void loop() {
 
     // Curve generator
     if (!curve_generated && gps_online) {
-      p0 = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
+      p0 = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD); // This point should be (0,0)
       
       // Dynamic Gate Selection: Choose the gate closest to our release point
       double d1 = sqrt(pow(p0.x - gate1_m.x, 2) + pow(p0.y - gate1_m.y, 2));
