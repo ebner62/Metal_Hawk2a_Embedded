@@ -461,11 +461,11 @@ void loop() {
       double correction = steeringPID.compute(error);
 
       // Map to servos (90 is neutral)
-      int p_out = 90 + (int)correction;
-      int s_out = 90 - (int)correction;
+      int p_out = 2500 - (int)correction;
+      int s_out = 500 + (int)correction;
 
-      port_s.write(constrain(p_out, 45, 135)); // Right
-      starboard_s.write(constrain(s_out, 45, 135)); // Left
+      port_s.write(constrain(p_out, 500, 2500)); // Right
+      starboard_s.write(constrain(s_out, 500, 2500)); // Left
 
       // Update telemetry variables
       VECTOR_PRODUCT = error;
