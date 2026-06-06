@@ -426,7 +426,7 @@ void loop() {
     
     // Braking
     else if (ALTITUDE <= 20.0){
-      break_flare();
+      brake_flare();
     }
 
     // Egg release
@@ -450,7 +450,7 @@ void loop() {
     }
 
     // 2. Active Steering Logic
-    if (curve_generated) {
+    if (curve_generated && !(braking)) {
       Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
 
       check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
@@ -881,7 +881,7 @@ void handleCommand(char* message){
   }
 }
 
-void break_flare() {
+void brake_flare() {
   if (!flare){
     flare_start_time = millis();
     flare = true;
