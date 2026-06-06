@@ -367,7 +367,7 @@ void loop() {
 
   Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
   double heading_rad = current_heading * (M_PI / 180.0);
-  
+
   if (CX == true){
     send_telemetry();
   }
@@ -904,7 +904,7 @@ void braking_system(){
   }
 
   if (ALTITUDE <= (apogee * 0.65)){
-    if ((avg_velocity >= 6.5) && (braking = false)){
+    if ((avg_velocity >= 6.5) && (braking = false) && (is_aligned_for_braking == true)){
       starboard_s.writeMicroseconds(2500);
       port_s.writeMicroseconds(500);
       braking = true;
