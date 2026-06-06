@@ -456,33 +456,33 @@ void loop() {
     // 2. Active Steering Logic
     if (curve_generated && !(braking)) {
 
-      check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
-      
-      // Get error (Positive = Turn Left, Negative = Turn Right)
-      double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
+    check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
 
-      // Your set mechanical throw amount (how many microseconds to pull the line)
-      int fixed_turn_amount = 400; 
+    // Get error (Positive = Turn Left, Negative = Turn Right)
+    double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
 
-      // Establish baselines for both servos
-      int p_out = 2500; // Left servo default (relaxed)
-      int s_out = 500;  // Right servo default (relaxed)
+    // Your set mechanical throw amount (how many microseconds to pull the line)
+    int fixed_turn_amount = 400; 
 
-      // Steering Logic
-      if (std::abs(error) < 0.05) {
-          // 1. Moving straight / in deadband: Both servos remain at their initial/zeroed states
-          p_out = 2500;
-          s_out = 500;
-      } 
-      else if (error > 0) {
-          // 2. Turn LEFT: Pull left servo down, leave right servo relaxed at initial state
-          p_out = 2500 - fixed_turn_amount; 
-          s_out = 500; 
-      } 
-      else if (error < 0) {
-          // 3. Turn RIGHT: Pull right servo up, leave left servo relaxed at initial state
-          p_out = 2500;
-          s_out = 500 + fixed_turn_amount;
+    // Establish baselines for both servos
+    int p_out = 2500; // Left servo default (relaxed)
+    int s_out = 500;  // Right servo default (relaxed)
+
+    // Steering Logic
+    if (std::abs(error) < 0.05) {
+        // 1. Moving straight / in deadband: Both servos remain at their initial/zeroed states
+        p_out = 2500;
+        s_out = 500;
+    } 
+    else if (error > 0) {
+        // 2. Turn LEFT: Pull left servo down, leave right servo relaxed at initial state
+        p_out = 2500 - fixed_turn_amount; 
+        s_out = 500; 
+    } 
+    else if (error < 0) {
+        // 3. Turn RIGHT: Pull right servo up, leave left servo relaxed at initial state
+        p_out = 2500;
+        s_out = 500 + fixed_turn_amount;
     }
 
     // Write the final states to the hardware using writeMicroseconds
