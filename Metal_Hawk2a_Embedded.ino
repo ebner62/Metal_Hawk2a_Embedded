@@ -456,38 +456,41 @@ void loop() {
     // 2. Active Steering Logic
     if (curve_generated && !(braking)) {
 
-      check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
-      
-      // Get error and compute PID correction
-      double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
+    check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
 
-      double fixed_turn_amount = 300.0; 
-      double correction = 0.0;
+    // Get error (Positive = Turn Left, Negative = Turn Right)
+    double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
 
-      // 2. The Steering Logic with a Deadband
-      if (std::abs(error) < 0.05) {
-          // We are basically straight. Do nothing to prevent servo jitter.
-          correction = 0.0; 
-      } 
-      else if (error > 0) {
-          // We need to turn LEFT
-          correction = fixed_turn_amount;
-      } 
-      else if (error < 0) {
-          // We need to turn RIGHT
-          correction = -fixed_turn_amount;
-      }
+    // Your set mechanical throw amount (how many microseconds to pull the line)
+    int fixed_turn_amount = 400; 
 
-      // Map to servos (90 is neutral)
-      int p_out = 2500 - (int)correction; // correction needs to be small
-      int s_out = 500 + (int)correction;
+    // Establish baselines for both servos
+    int p_out = 2500; // Left servo default (relaxed)
+    int s_out = 500;  // Right servo default (relaxed)
 
-      port_s.write(constrain(p_out, 500, 2500)); // Left
-      starboard_s.write(constrain(s_out, 500, 2500)); // Right
-
-      // Update telemetry variables
-      VECTOR_PRODUCT = error;
+    // Steering Logic
+    if (std::abs(error) < 0.05) {
+        // 1. Moving straight / in deadband: Both servos remain at their initial/zeroed states
+        p_out = 2500;
+        s_out = 500;
+    } 
+    else if (error > 0) {
+        // 2. Turn LEFT: Pull left servo down, leave right servo relaxed at initial state
+        p_out = 2500 - fixed_turn_amount; 
+        s_out = 500; 
+    } 
+    else if (error < 0) {
+        // 3. Turn RIGHT: Pull right servo up, leave left servo relaxed at initial state
+        p_out = 2500;
+        s_out = 500 + fixed_turn_amount;
     }
+
+    // Write the final states to the hardware using writeMicroseconds
+    port_s.writeMicroseconds(constrain(p_out, 500, 2500));      // Left Servo
+    starboard_s.writeMicroseconds(constrain(s_out, 500, 2500)); // Right Servo
+
+    // Update telemetry variables
+    VECTOR_PRODUCT = error;
   }
 
   else if(sw_state == "PAYLOAD_RELEASE"){
