@@ -205,6 +205,9 @@ void setup() {
   starboard_s.attach(starboard_s_pin);
   delay(100);
 
+  starboard_s.writeMicroseconds(500);
+  port_s.writeMicroseconds(2500);
+
   //==========
   // BMP & SD
   //==========
@@ -398,7 +401,7 @@ void loop() {
 
   else if(sw_state == "APOGEE"){
     unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= 1500) {
+    if (currentMillis - previousMillis >= 3000) {
       previousMillis = currentMillis;
       sw_state = "DESCENT";
     }
@@ -427,7 +430,7 @@ void loop() {
     }
 
     // Egg release
-    else if (ALTITUDE <= 2.0){
+    else if (ALTITUDE <= 4.0 || velocity <= 2){
       sw_state = "PAYLOAD_RELEASE";
       release_s.write(egg_release);
       egg_fired = true;
@@ -892,29 +895,32 @@ void break_flare() {
 }
 
 void braking_system(){
-  if (ALTITUDE <= (apogee * 0.7){
+  if (ALTITUDE <= (apogee * 0.7)){
     total_velocity += velocity;
     braking_loop += 1;
     avg_velocity = total_velocity/braking_loop;
   }
 
   if (ALTITUDE <= (apogee * 0.65)){
-    if ((avg_velocity >= 6.5) && (braking = false) && ){
-      //turn on braking
+    if ((avg_velocity >= 6.5) && (braking = false)){
+      starboard_s.writeMicroseconds(2500);
+      port_s.writeMicroseconds(500);
       braking = true;
       braking_bool_loop = 0;
     }
 
-    if else(braking = true){
+    else if (braking = true){
       braking_bool_loop += 1;
       if (braking_bool_loop == 20){
         braking = false;
-        //turn off braking
+        starboard_s.writeMicroseconds(500);
+        port_s.writeMicroseconds(2500);
       }
     }
 
-    if else(avg_velocity <= 5.5){
-      //turn off braking
+    else if (avg_velocity <= 5.5){
+      starboard_s.writeMicroseconds(2500);
+      port_s.writeMicroseconds(500);
     }
   }
   
