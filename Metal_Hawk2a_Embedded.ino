@@ -364,6 +364,10 @@ void loop() {
   collect_telemetry();
   receive_command();
   braking_system();
+
+  Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
+  double heading_rad = current_heading * (M_PI / 180.0);
+  
   if (CX == true){
     send_telemetry();
   }
@@ -451,10 +455,8 @@ void loop() {
 
     // 2. Active Steering Logic
     if (curve_generated && !(braking)) {
-      Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
 
       check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
-      double heading_rad = current_heading * (M_PI / 180.0);
       
       // Get error and compute PID correction
       double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
