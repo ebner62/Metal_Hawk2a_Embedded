@@ -363,10 +363,10 @@ void setup() {
 void loop() {
   collect_telemetry();
   receive_command();
-  braking_system();
 
   Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
   double heading_rad = current_heading * (M_PI / 180.0);
+  braking_system(current_pos, heading_rad, p2);
 
   if (CX == true){
     send_telemetry();
@@ -389,10 +389,10 @@ void loop() {
         sw_state = "APOGEE";
 
 
-      if (cam_loop_count = 0){
+      if (cam_loop_count == 0){
         digitalWrite(ground_cam, LOW);
       }
-      if (cam_loop_count = 20){
+      if (cam_loop_count == 20){
       digitalWrite(release_cam, LOW);
       }
       cam_loop_count += 1;
@@ -896,7 +896,7 @@ void brake_flare() {
   starboard_s.write(current_flare_angle);
 }
 
-void braking_system(){
+void braking_system(Point2D current_pos, double heading_rad, Point2D p2){
   if (ALTITUDE <= (apogee * 0.7)){
     total_velocity += velocity;
     braking_loop += 1;
@@ -904,14 +904,14 @@ void braking_system(){
   }
 
   if (ALTITUDE <= (apogee * 0.65)){
-    if ((avg_velocity >= 6.5) && (braking = false) && (is_aligned_for_braking == true)){
+    if ((avg_velocity >= 6.5) && (braking == false) && (is_aligned_for_braking(current_pos, heading_rad, p2) == true)){
       starboard_s.writeMicroseconds(2500);
       port_s.writeMicroseconds(500);
       braking = true;
       braking_bool_loop = 0;
     }
 
-    else if (braking = true){
+    else if (braking == true){
       braking_bool_loop += 1;
       if (braking_bool_loop == 20){
         braking = false;
