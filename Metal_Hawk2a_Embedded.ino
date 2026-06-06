@@ -363,11 +363,11 @@ void setup() {
 void loop() {
   collect_telemetry();
   receive_command();
+  braking_system();
 
   Point2D current_pos = gps_to_meters(lat_rad, lon_rad, TARGET_LAT_RAD, TARGET_LON_RAD);
   double heading_rad = current_heading * (M_PI / 180.0);
-  braking_system(current_pos, heading_rad, p2);
-
+  
   if (CX == true){
     send_telemetry();
   }
@@ -389,10 +389,10 @@ void loop() {
         sw_state = "APOGEE";
 
 
-      if (cam_loop_count == 0){
+      if (cam_loop_count = 0){
         digitalWrite(ground_cam, LOW);
       }
-      if (cam_loop_count == 20){
+      if (cam_loop_count = 20){
       digitalWrite(release_cam, LOW);
       }
       cam_loop_count += 1;
@@ -458,36 +458,39 @@ void loop() {
 
       check_and_redraw_path(current_pos, p0, p1, p2, gate1_m, gate2_m, 20.0);
       
-      // Get error and compute PID correction
+      // Get error (Positive = Turn Left, Negative = Turn Right)
       double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
 
-      double fixed_turn_amount = 300.0; 
-      double correction = 0.0;
+      // Your set mechanical throw amount (how many microseconds to pull the line)
+      int fixed_turn_amount = 400; 
 
-      // 2. The Steering Logic with a Deadband
+      // Establish baselines for both servos
+      int p_out = 2500; // Left servo default (relaxed)
+      int s_out = 500;  // Right servo default (relaxed)
+
+      // Steering Logic
       if (std::abs(error) < 0.05) {
-          // We are basically straight. Do nothing to prevent servo jitter.
-          correction = 0.0; 
+          // 1. Moving straight / in deadband: Both servos remain at their initial/zeroed states
+          p_out = 2500;
+          s_out = 500;
       } 
       else if (error > 0) {
-          // We need to turn LEFT
-          correction = fixed_turn_amount;
+          // 2. Turn LEFT: Pull left servo down, leave right servo relaxed at initial state
+          p_out = 2500 - fixed_turn_amount; 
+          s_out = 500; 
       } 
       else if (error < 0) {
-          // We need to turn RIGHT
-          correction = -fixed_turn_amount;
-      }
-
-      // Map to servos (90 is neutral)
-      int p_out = 2500 - (int)correction; // correction needs to be small
-      int s_out = 500 + (int)correction;
-
-      port_s.write(constrain(p_out, 500, 2500)); // Left
-      starboard_s.write(constrain(s_out, 500, 2500)); // Right
-
-      // Update telemetry variables
-      VECTOR_PRODUCT = error;
+          // 3. Turn RIGHT: Pull right servo up, leave left servo relaxed at initial state
+          p_out = 2500;
+          s_out = 500 + fixed_turn_amount;
     }
+
+    // Write the final states to the hardware using writeMicroseconds
+    port_s.writeMicroseconds(constrain(p_out, 500, 2500));      // Left Servo
+    starboard_s.writeMicroseconds(constrain(s_out, 500, 2500)); // Right Servo
+
+    // Update telemetry variables
+    VECTOR_PRODUCT = error;
   }
 
   else if(sw_state == "PAYLOAD_RELEASE"){
@@ -912,7 +915,7 @@ void brake_flare() {
   starboard_s.write(current_flare_angle);
 }
 
-void braking_system(Point2D current_pos, double heading_rad, Point2D p2){
+void braking_system(){
   if (ALTITUDE <= (apogee * 0.7)){
     total_velocity += velocity;
     braking_loop += 1;
@@ -920,14 +923,14 @@ void braking_system(Point2D current_pos, double heading_rad, Point2D p2){
   }
 
   if (ALTITUDE <= (apogee * 0.65)){
-    if ((avg_velocity >= 6.5) && (braking == false) && (is_aligned_for_braking(current_pos, heading_rad, p2) == true)){
+    if ((avg_velocity >= 6.5) && (braking = false)){
       starboard_s.writeMicroseconds(2500);
       port_s.writeMicroseconds(500);
       braking = true;
       braking_bool_loop = 0;
     }
 
-    else if (braking == true){
+    else if (braking = true){
       braking_bool_loop += 1;
       if (braking_bool_loop == 20){
         braking = false;
