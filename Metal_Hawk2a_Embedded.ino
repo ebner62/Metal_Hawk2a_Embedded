@@ -131,7 +131,9 @@ int cam_loop_count = 0;
 
 float total_velocity = 0;
 float avg_velocity = 0;
-int breaking_loop = 0;
+int braking_loop = 0;
+bool braking = false;
+int braking_bool_loop = 0;
 
 //=======================
 // Required Declarations
@@ -358,7 +360,7 @@ void setup() {
 void loop() {
   collect_telemetry();
   receive_command();
-  breaking_system();
+  braking_system();
   if (CX == true){
     send_telemetry();
   }
@@ -419,7 +421,7 @@ void loop() {
       nose_fired = true;
     }
     
-    // Breaking
+    // Braking
     else if (ALTITUDE <= 20.0){
       break_flare();
     }
@@ -889,18 +891,33 @@ void break_flare() {
   starboard_s.write(current_flare_angle);
 }
 
-void breaking_system(){
+void braking_system(){
   if (ALTITUDE <= (apogee * 0.7){
     total_velocity += velocity;
-    breaking_loop += 1;
-    avg_velocity = total_velocity/breaking_loop;
+    braking_loop += 1;
+    avg_velocity = total_velocity/braking_loop;
   }
 
-  if ((ALTITUDE <= (apogee * 0.65))){
-    if (avg_velocity >= 6.5){
+  if (ALTITUDE <= (apogee * 0.65)){
+    if ((avg_velocity >= 6.5) && (braking = false) && ){
+      //turn on braking
+      braking = true;
+      braking_bool_loop = 0;
+    }
 
+    if else(braking = true){
+      braking_bool_loop += 1;
+      if (braking_bool_loop == 20){
+        braking = false;
+        //turn off braking
+      }
+    }
+
+    if else(avg_velocity <= 5.5){
+      //turn off braking
     }
   }
+  
 }
 
 void save_flight_state() {
