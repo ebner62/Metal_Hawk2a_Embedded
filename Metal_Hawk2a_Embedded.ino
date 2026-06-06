@@ -129,6 +129,10 @@ unsigned long previousMillis = 0;
 
 int cam_loop_count = 0;
 
+float total_velocity = 0;
+float avg_velocity = 0;
+int breaking_loop = 0;
+
 //=======================
 // Required Declarations
 //=======================
@@ -354,6 +358,7 @@ void setup() {
 void loop() {
   collect_telemetry();
   receive_command();
+  breaking_system();
   if (CX == true){
     send_telemetry();
   }
@@ -415,7 +420,7 @@ void loop() {
     }
     
     // Breaking
-    else if (ALTITUDE <= 5.0){
+    else if (ALTITUDE <= 20.0){
       break_flare();
     }
 
@@ -882,6 +887,20 @@ void break_flare() {
   int current_flare_angle = start_brake_angle + (progress * (max_brake_angle - start_brake_angle));
   port_s.write(current_flare_angle);
   starboard_s.write(current_flare_angle);
+}
+
+void breaking_system(){
+  if (ALTITUDE <= (apogee * 0.7){
+    total_velocity += velocity;
+    breaking_loop += 1;
+    avg_velocity = total_velocity/breaking_loop;
+  }
+
+  if ((ALTITUDE <= (apogee * 0.65))){
+    if (avg_velocity >= 6.5){
+
+    }
+  }
 }
 
 void save_flight_state() {
