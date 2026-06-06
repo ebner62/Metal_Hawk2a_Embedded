@@ -137,6 +137,33 @@ inline bool check_and_redraw_path(Point2D current_pos, Point2D &p0, Point2D &p1,
     return false;
 }
 
+// Returns true ONLY if we are facing the target within an acceptable tolerance
+
+inline bool is_aligned_for_braking(Point2D current_pos, double current_heading_rad, Point2D target_pos, double parallel_tolerance = 0.25) {
+    
+    double Tx = target_pos.x - current_pos.x;
+    double Ty = target_pos.y - current_pos.y;
+    
+    double target_mag = std::sqrt(Tx*Tx + Ty*Ty);
+    if (target_mag > 0) {
+        Tx /= target_mag; 
+        Ty /= target_mag;
+    }
+
+    double Hx = std::sin(current_heading_rad);
+    double Hy = std::cos(current_heading_rad);
+
+    double cross_product = (Hx * Ty) - (Hy * Tx); // 0 = parallel
+    double dot_product = (Hx * Tx) + (Hy * Ty);   // 1 = facing forward, -1 = facing backward
+
+    // Check if we are parallel enough AND actually facing the target
+    if (std::abs(cross_product) <= parallel_tolerance && dot_product > 0.8) {
+        return true; 
+    }
+    
+    return false;
+}
+
 // This is the PID which incorporates the calculate_steering_error() function 
 
 struct PIDController {

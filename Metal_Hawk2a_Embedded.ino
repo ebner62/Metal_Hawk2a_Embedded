@@ -454,8 +454,8 @@ void loop() {
       int p_out = 90 + (int)correction;
       int s_out = 90 - (int)correction;
 
-      port_s.write(constrain(p_out, 45, 135));
-      starboard_s.write(constrain(s_out, 45, 135));
+      port_s.write(constrain(p_out, 45, 135)); // Right
+      starboard_s.write(constrain(s_out, 45, 135)); // Left
 
       // Update telemetry variables
       VECTOR_PRODUCT = error;
