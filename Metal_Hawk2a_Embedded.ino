@@ -460,14 +460,30 @@ void loop() {
       
       // Get error and compute PID correction
       double error = calculate_steering_error(current_pos, heading_rad, p0, p1, p2);
-      double correction = steeringPID.compute(error);
+
+      double fixed_turn_amount = 300.0; 
+      double correction = 0.0;
+
+      // 2. The Steering Logic with a Deadband
+      if (std::abs(error) < 0.05) {
+          // We are basically straight. Do nothing to prevent servo jitter.
+          correction = 0.0; 
+      } 
+      else if (error > 0) {
+          // We need to turn LEFT
+          correction = fixed_turn_amount;
+      } 
+      else if (error < 0) {
+          // We need to turn RIGHT
+          correction = -fixed_turn_amount;
+      }
 
       // Map to servos (90 is neutral)
-      int p_out = 2500 - (int)correction;
+      int p_out = 2500 - (int)correction; // correction needs to be small
       int s_out = 500 + (int)correction;
 
-      port_s.write(constrain(p_out, 500, 2500)); // Right
-      starboard_s.write(constrain(s_out, 500, 2500)); // Left
+      port_s.write(constrain(p_out, 500, 2500)); // Left
+      starboard_s.write(constrain(s_out, 500, 2500)); // Right
 
       // Update telemetry variables
       VECTOR_PRODUCT = error;
