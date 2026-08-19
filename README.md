@@ -1,7 +1,7 @@
 # CanSat Autonomous Glider Flight Software (Team 1094)
 
 ![C++](https://img.shields.io/badge/Language-C%2B%2B-blue.svg)
-![Platform](https://img.shields.io/badge/Platform-Teensy%20%7C%20Arduino-orange.svg)
+![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%20Pico%202-orange.svg)
 ![Build](https://img.shields.io/badge/Status-Flight%20Ready-brightgreen.svg)
 
 Embedded flight software for an autonomous aerospace glider developed for the International CanSat Competition. The system handles multi-sensor fusion over dual I2C buses, real-time telemetry downlink, ground station command handling, state restoration via non-volatile memory (EEPROM/SD), dual camera triggering, and actuation for flight surface control and payload separation.
@@ -45,7 +45,7 @@ The core architecture executes an asynchronous, event-driven flight loop managin
   * **Steering Mechanisms:** Differential port and starboard servos for paraglider/flight surface control.
 * **Storage & Recovery:**
   * **SD Card (SPI):** Real-time flight telemetry logging (`flight.csv`) and persistent flight state logging (`state.txt`).
-  * **EEPROM:** Mid-Mission Flag (MMF) storage to retain critical flight state across un-commanded power resets.
+  * **EEPROM / Flash Emulation:** Mid-Mission Flag (MMF) storage to retain critical flight state across un-commanded power resets.
 * **Payload Operations:**
   * Ground-facing and release-view onboard action camera control via GPIO pulse triggering.
 
@@ -83,47 +83,3 @@ Downlinked via serial telemetry (`Serial1`, 115200 baud) at 1 Hz in CSV format:
 
 ```csv
 <TEAM_ID>,<MISSION_TIME>,<PACKET_COUNT>,<MODE>,<STATE>,<ALTITUDE>,<TEMP>,<PRESSURE>,<VOLTAGE>,<CURRENT>,<GYRO_R>,<GYRO_P>,<GYRO_Y>,<ACCEL_R>,<ACCEL_P>,<ACCEL_Y>,<GPS_TIME>,<GPS_ALT>,<GPS_LAT>,<GPS_LON>,<GPS_SATS>,<ECHO>
-```
-
-### Telecommand Set
-Supported Ground Control Station (GCS) commands parsed via incoming serial frames:
-
-| Command Structure | Description |
-| :--- | :--- |
-| `CMD,1094,CX,ON/OFF` | Enable / Disable telemetry transmission stream |
-| `CMD,1094,ST,GPS` or `HH:MM:SS` | Synchronize internal mission clock |
-| `CMD,1094,SIM,ENABLE/ACTIVATE/DISABLE` | Toggle simulation pressure override mode |
-| `CMD,1094,SIMP,<PRESSURE>` | Inject pressure values during simulation testing |
-| `CMD,1094,CAL` | Re-calibrate ground pressure and zero altitude |
-| `CMD,1094,MEC,REL/ENG` | Probe release mechanism manually trigger |
-| `CMD,1094,NOSE,REL/ENG` | Nose release mechanism manually trigger |
-| `CMD,1094,EGG,REL/ENG` | Payload release mechanism manually trigger |
-| `CMD,1094,MMF,TRUE/FALSE` | Toggle EEPROM Mid-Mission state retention flag |
-| `CMD,1094,GCAM,ON/OFF` | Manual override ground camera trigger |
-| `CMD,1094,DCAM,ON/OFF` | Manual override descent camera trigger |
-
----
-
-## Repository Structure
-
-```text
-.
-├── Metal_Hawk2a.ino     # Main system logic, sensor initialization, state machine, telecommands
-├── Navigation.h         # Guidance, coordinate transforms, Bézier generation, & PID algorithms
-└── README.md            # Software architecture documentation
-```
-
----
-
-## Build & Dependencies
-
-Built in Arduino IDE / PlatformIO targeting Teensy or RP2040/RP2030 series processors.
-
-### Required Libraries
-* `Wire.h` & `SPI.h` (Standard Hardware Busses)
-* `EEPROM.h` & `SD.h` (Non-Volatile Storage)
-* `Adafruit_BMP5xx.h` (BMP581 Barometer)
-* `Adafruit_BNO08x.h` (BNO085 AHRS/IMU)
-* `Adafruit_INA260.h` (INA260 Power Monitor)
-* `SparkFun_u-blox_GNSS_v3.h` (SAM-M8Q GPS Module)
-* `Servo.h` (PWM Hardware Control)
